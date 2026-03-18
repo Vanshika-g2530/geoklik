@@ -14,22 +14,17 @@ class CameraScreen extends StatefulWidget {
 class _CameraScreenState extends State<CameraScreen> {
   CameraController? _controller;
   List<CameraDescription>? _cameras;
+
   bool _isCameraReady = false;
-  bool _isFrontCamera = false;
-  double _zoomLevel = 1.0;
-  double _minZoom = 1.0;
-  double _maxZoom = 8.0;
   bool _flashOn = false;
 
-  // GPS data
+  double _zoomLevel = 1.0;
+
   String _latitude = '--';
   String _longitude = '--';
-  String _altitude = '--';
 
-  // Time & Date
   String _currentTime = '';
   String _currentDate = '';
-  String _currentDay = '';
 
   File? _lastCapturedImage;
 
@@ -41,140 +36,110 @@ class _CameraScreenState extends State<CameraScreen> {
     _startTimeUpdates();
   }
 
-  // ─── TIME ───────────────────────────────────────────────
-  void _startTimeUpdates() {
-    _updateTime();
-    Future.doWhile(() async {
-      await Future.delayed(const Duration(seconds: 1));
-      if (!mounted) return false;
-      _updateTime();
-      return true;
-    });
-  }
+  // CAMERA INIT
+  Future<void> _initCamera() async {
+    await Permission.camera.request();
 
-  void _updateTime() {
-    final now = DateTime.now();
-    final days = [
-      'Sunday',
-      'Monday',
-      'Tuesday',
-      'Wednesday',
-      'Thursday',
-      'Friday',
-      'Saturday',
-    ];
-    final months = [
-      'Jan',
-      'Feb',
-      'Mar',
-      'Apr',
-      'May',
-      'Jun',
-      'Jul',
-      'Aug',
-      'Sep',
-      'Oct',
-      'Nov',
-      'Dec',
-    ];
+    _cameras = await availableCameras();
+
+    _controller = CameraController(
+      _cameras!.first,
+      ResolutionPreset.high,
+      enableAudio: false,
+    );
+
+    await _controller!.initialize();
+
     setState(() {
-      _currentTime =
-          '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}:${now.second.toString().padLeft(2, '0')}';
-      _currentDate = '${now.day} ${months[now.month - 1]} ${now.year}';
-      _currentDay = days[now.weekday % 7];
+      _isCameraReady = true;
     });
   }
 
-  // ─── GPS ────────────────────────────────────────────────
+  // LOCATION
   Future<void> _startLocationUpdates() async {
     final status = await Permission.location.request();
+
     if (!status.isGranted) return;
 
-    bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
-    if (!serviceEnabled) return;
-
-    Geolocator.getPositionStream(
-      locationSettings: const LocationSettings(
-        accuracy: LocationAccuracy.high,
-        distanceFilter: 1,
-      ),
-    ).listen((Position pos) {
-      if (!mounted) return;
+    Geolocator.getPositionStream().listen((Position pos) {
       setState(() {
         _latitude = pos.latitude.toStringAsFixed(6);
         _longitude = pos.longitude.toStringAsFixed(6);
-        _altitude = pos.altitude.toStringAsFixed(1);
       });
     });
   }
 
-  // ─── CAMERA ─────────────────────────────────────────────
-  Future<void> _initCamera({bool useFront = false}) async {
-    await Permission.camera.request();
-    _cameras = await availableCameras();
-    if (_cameras == null || _cameras!.isEmpty) return;
+  // TIME
+  void _startTimeUpdates() {
+    Future.doWhile(() async {
+      await Future.delayed(const Duration(seconds: 1));
 
-    final desc = useFront
-        ? _cameras!.firstWhere(
-            (c) => c.lensDirection == CameraLensDirection.front,
-            orElse: () => _cameras!.first,
-          )
-        : _cameras!.firstWhere(
-            (c) => c.lensDirection == CameraLensDirection.back,
-            orElse: () => _cameras!.first,
-          );
+      final now = DateTime.now();
+
+      setState(() {
+        _currentTime = "${now.hour}:${now.minute}:${now.second}";
+
+        _currentDate = "${now.day}/${now.month}/${now.year}";
+      });
+
+      return true;
+    });
+  }
+
+  // FLASH
+  Future<void> _toggleFlash() async {
+    if (_controller == null) return;
+
+    if (_flashOn) {
+      await _controller!.setFlashMode(FlashMode.off);
+    } else {
+      await _controller!.setFlashMode(FlashMode.torch);
+    }
+
+    setState(() {
+      _flashOn = !_flashOn;
+    });
+  }
+
+  // SWITCH CAMERA
+  Future<void> _toggleCamera() async {
+    if (_cameras == null) return;
+
+    final current = _controller!.description;
+
+    final newCamera = _cameras!.firstWhere(
+      (camera) => camera.lensDirection != current.lensDirection,
+    );
+
+    await _controller?.dispose();
 
     _controller = CameraController(
-      desc,
+      newCamera,
       ResolutionPreset.high,
       enableAudio: false,
     );
+
     await _controller!.initialize();
 
-    _minZoom = await _controller!.getMinZoomLevel();
-    _maxZoom = await _controller!.getMaxZoomLevel();
-    _zoomLevel = _minZoom;
-
-    if (!mounted) return;
-    setState(() => _isCameraReady = true);
+    setState(() {});
   }
 
-  Future<void> _toggleCamera() async {
-    setState(() {
-      _isCameraReady = false;
-      _isFrontCamera = !_isFrontCamera;
-    });
-    await _controller?.dispose();
-    await _initCamera(useFront: _isFrontCamera);
-  }
-
-  Future<void> _toggleFlash() async {
-    if (_controller == null) return;
-    setState(() => _flashOn = !_flashOn);
-    await _controller!.setFlashMode(_flashOn ? FlashMode.torch : FlashMode.off);
-  }
-
+  // CAPTURE PHOTO
   Future<void> _capturePhoto() async {
-    if (_controller == null || !_controller!.value.isInitialized) return;
-    try {
-      final XFile file = await _controller!.takePicture();
-      setState(() => _lastCapturedImage = File(file.path));
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Photo saved! $_currentDate $_currentTime'),
-          backgroundColor: Colors.teal,
-          duration: const Duration(seconds: 2),
-        ),
-      );
-    } catch (e) {
-      debugPrint('Capture error: $e');
-    }
-  }
-
-  Future<void> _setZoom(double value) async {
     if (_controller == null) return;
-    setState(() => _zoomLevel = value);
-    await _controller!.setZoomLevel(value);
+
+    final XFile file = await _controller!.takePicture();
+
+    setState(() {
+      _lastCapturedImage = File(file.path);
+    });
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text("Photo captured"),
+        backgroundColor: Color(0xFFDEB841),
+      ),
+    );
   }
 
   @override
@@ -183,299 +148,188 @@ class _CameraScreenState extends State<CameraScreen> {
     super.dispose();
   }
 
-  // ─── BUILD ───────────────────────────────────────────────
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.black,
-      body: SafeArea(
-        child: Stack(
-          children: [
-            // ── CAMERA PREVIEW ──────────────────────────
-            if (_isCameraReady && _controller != null)
-              Positioned.fill(child: CameraPreview(_controller!))
-            else
-              const Positioned.fill(
-                child: Center(
-                  child: CircularProgressIndicator(color: Colors.teal),
-                ),
-              ),
 
-            // ── TOP BAR ─────────────────────────────────
-            Positioned(
-              top: 0,
-              left: 0,
-              right: 0,
-              child: Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 16,
-                  vertical: 10,
-                ),
-                decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    begin: Alignment.topCenter,
-                    end: Alignment.bottomCenter,
-                    colors: [Colors.black.withOpacity(0.7), Colors.transparent],
-                  ),
-                ),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    // App name
-                    const Text(
-                      'GeoKlik',
-                      style: TextStyle(
-                        color: Colors.tealAccent,
-                        fontSize: 18,
-                        fontWeight: FontWeight.bold,
-                        letterSpacing: 1.5,
-                      ),
-                    ),
-                    // Flash toggle
-                    IconButton(
-                      onPressed: _toggleFlash,
-                      icon: Icon(
-                        _flashOn ? Icons.flash_on : Icons.flash_off,
-                        color: _flashOn ? Colors.yellow : Colors.white,
-                        size: 26,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
+      appBar: AppBar(
+        backgroundColor: const Color(0xFF031926),
+        elevation: 0,
+        title: Image.asset("assets/logo_white.png", height: 25),
+      ),
+
+      body: Stack(
+        children: [
+          if (_isCameraReady)
+            Positioned.fill(child: CameraPreview(_controller!))
+          else
+            const Center(
+              child: CircularProgressIndicator(color: Color(0xFFDEB841)),
             ),
 
-            // ── GPS BANNER ──────────────────────────────
-            Positioned(
-              top: 65,
-              left: 12,
-              right: 12,
-              child: Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 14,
-                  vertical: 8,
-                ),
-                decoration: BoxDecoration(
-                  color: Colors.black.withOpacity(0.62),
-                  borderRadius: BorderRadius.circular(10),
-                  border: Border.all(
-                    color: Colors.tealAccent.withOpacity(0.5),
-                    width: 1,
-                  ),
-                ),
-                child: Row(
-                  children: [
-                    const Icon(
-                      Icons.location_on,
-                      color: Colors.tealAccent,
-                      size: 16,
-                    ),
-                    const SizedBox(width: 6),
-                    Expanded(
-                      child: Wrap(
-                        spacing: 12,
-                        runSpacing: 2,
-                        children: [
-                          _gpsChip('LAT', _latitude),
-                          _gpsChip('LON', _longitude),
-                          _gpsChip('ALT', '${_altitude}m'),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Column(
-                      crossAxisAlignment: CrossAxisAlignment.end,
-                      children: [
-                        Text(
-                          _currentTime,
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 13,
-                            fontWeight: FontWeight.bold,
-                            fontFamily: 'monospace',
-                          ),
-                        ),
-                        Text(
-                          '$_currentDay, $_currentDate',
-                          style: TextStyle(
-                            color: Colors.grey[300],
-                            fontSize: 10,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-            ),
+          // LOCATION OVERLAY
+          Positioned(
+            bottom: 160,
+            left: 12,
+            right: 12,
+            child: Container(
+              padding: const EdgeInsets.all(10),
 
-            // ── ZOOM SLIDER ─────────────────────────────
-            Positioned(
-              right: 12,
-              top: MediaQuery.of(context).size.height * 0.25,
-              bottom: MediaQuery.of(context).size.height * 0.22,
+              decoration: BoxDecoration(
+                color: Colors.black.withOpacity(0.6),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: const Color(0xFFDEB841)),
+              ),
+
               child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 6,
-                      vertical: 4,
-                    ),
-                    decoration: BoxDecoration(
-                      color: Colors.black54,
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: Text(
-                      '${_zoomLevel.toStringAsFixed(1)}x',
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 12,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
+                  Text(
+                    "Lat: $_latitude  Lon: $_longitude",
+                    style: const TextStyle(color: Colors.white, fontSize: 12),
                   ),
+
                   const SizedBox(height: 4),
-                  Expanded(
-                    child: RotatedBox(
-                      quarterTurns: 3,
-                      child: Slider(
-                        value: _zoomLevel,
-                        min: _minZoom,
-                        max: _maxZoom,
-                        activeColor: Colors.tealAccent,
-                        inactiveColor: Colors.white30,
-                        onChanged: _setZoom,
-                      ),
-                    ),
+
+                  Text(
+                    "$_currentDate  $_currentTime",
+                    style: const TextStyle(color: Colors.white70, fontSize: 11),
                   ),
                 ],
               ),
             ),
+          ),
 
-            // ── BOTTOM CONTROLS ─────────────────────────
-            Positioned(
-              bottom: 0,
-              left: 0,
-              right: 0,
-              child: Container(
-                padding: const EdgeInsets.symmetric(
-                  vertical: 20,
-                  horizontal: 30,
-                ),
-                decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    begin: Alignment.bottomCenter,
-                    end: Alignment.topCenter,
-                    colors: [
-                      Colors.black.withOpacity(0.85),
-                      Colors.transparent,
-                    ],
+          // FLASH + ZOOM + FLIP
+          Positioned(
+            bottom: 110,
+            left: 0,
+            right: 0,
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                IconButton(
+                  onPressed: _toggleFlash,
+                  icon: Icon(
+                    _flashOn ? Icons.flash_on : Icons.flash_off,
+                    color: Colors.white,
                   ),
                 ),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  crossAxisAlignment: CrossAxisAlignment.center,
-                  children: [
-                    // Last captured thumbnail
-                    GestureDetector(
-                      onTap: () {
-                        if (_lastCapturedImage != null) {
-                          showDialog(
-                            context: context,
-                            builder: (_) =>
-                                Dialog(child: Image.file(_lastCapturedImage!)),
-                          );
-                        }
-                      },
-                      child: Container(
-                        width: 52,
-                        height: 52,
-                        decoration: BoxDecoration(
-                          borderRadius: BorderRadius.circular(8),
-                          border: Border.all(color: Colors.white54, width: 1.5),
-                          color: Colors.white12,
-                        ),
-                        child: _lastCapturedImage != null
-                            ? ClipRRect(
-                                borderRadius: BorderRadius.circular(6),
-                                child: Image.file(
-                                  _lastCapturedImage!,
-                                  fit: BoxFit.cover,
-                                ),
-                              )
-                            : const Icon(
-                                Icons.photo,
-                                color: Colors.white38,
-                                size: 28,
-                              ),
-                      ),
-                    ),
 
-                    // Shutter button
-                    GestureDetector(
-                      onTap: _capturePhoto,
-                      child: Container(
-                        width: 72,
-                        height: 72,
-                        decoration: BoxDecoration(
-                          shape: BoxShape.circle,
-                          border: Border.all(color: Colors.white, width: 3),
-                          color: Colors.white24,
-                        ),
-                        child: Center(
-                          child: Container(
-                            width: 56,
-                            height: 56,
-                            decoration: const BoxDecoration(
-                              shape: BoxShape.circle,
-                              color: Colors.white,
-                            ),
+                const SizedBox(width: 20),
+
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 6,
+                  ),
+                  decoration: BoxDecoration(
+                    color: Colors.black54,
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: Row(
+                    children: [
+                      GestureDetector(
+                        onTap: () async {
+                          await _controller!.setZoomLevel(1.0);
+                          setState(() {
+                            _zoomLevel = 1.0;
+                          });
+                        },
+                        child: Text(
+                          "1x",
+                          style: TextStyle(
+                            color: _zoomLevel == 1.0
+                                ? const Color(0xFFDEB841)
+                                : Colors.white,
+                            fontWeight: FontWeight.bold,
                           ),
                         ),
                       ),
-                    ),
 
-                    // Flip camera
-                    IconButton(
-                      onPressed: _toggleCamera,
-                      icon: const Icon(
-                        Icons.flip_camera_android,
-                        color: Colors.white,
-                        size: 36,
+                      const SizedBox(width: 10),
+
+                      GestureDetector(
+                        onTap: () async {
+                          await _controller!.setZoomLevel(2.0);
+                          setState(() {
+                            _zoomLevel = 2.0;
+                          });
+                        },
+                        child: Text(
+                          "2x",
+                          style: TextStyle(
+                            color: _zoomLevel == 2.0
+                                ? const Color(0xFFDEB841)
+                                : Colors.white,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
 
-  // ─── HELPER WIDGET ──────────────────────────────────────
-  Widget _gpsChip(String label, String value) {
-    return RichText(
-      text: TextSpan(
-        children: [
-          TextSpan(
-            text: '$label: ',
-            style: TextStyle(
-              color: Colors.tealAccent.withOpacity(0.8),
-              fontSize: 10,
-              fontWeight: FontWeight.bold,
-            ),
-          ),
-          TextSpan(
-            text: value,
-            style: const TextStyle(
-              color: Colors.white,
-              fontSize: 10,
-              fontFamily: 'monospace',
+                const SizedBox(width: 20),
+
+                IconButton(
+                  onPressed: _toggleCamera,
+                  icon: const Icon(
+                    Icons.flip_camera_android,
+                    color: Colors.white,
+                  ),
+                ),
+              ],
             ),
           ),
         ],
+      ),
+
+      // BOTTOM BAR
+      bottomNavigationBar: Container(
+        height: 65,
+        color: const Color(0xFF031926),
+
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.spaceAround,
+          crossAxisAlignment: CrossAxisAlignment.center,
+
+          children: [
+            Container(
+              width: 40,
+              height: 40,
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(8),
+                color: Colors.black,
+              ),
+              child: _lastCapturedImage != null
+                  ? ClipRRect(
+                      borderRadius: BorderRadius.circular(8),
+                      child: Image.file(_lastCapturedImage!, fit: BoxFit.cover),
+                    )
+                  : const Icon(Icons.photo, color: Colors.white),
+            ),
+
+            const Icon(Icons.map, color: Colors.white),
+
+            GestureDetector(
+              onTap: _capturePhoto,
+              child: Container(
+                width: 60,
+                height: 60,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  border: Border.all(color: Colors.white, width: 4),
+                ),
+              ),
+            ),
+
+            const Icon(Icons.edit, color: Colors.white),
+
+            const Icon(Icons.location_on, color: Colors.white),
+          ],
+        ),
       ),
     );
   }

@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'main.dart';
 import 'camera_screen.dart';
 
 class SplashScreen extends StatefulWidget {
@@ -13,11 +12,10 @@ class _SplashScreenState extends State<SplashScreen> {
   @override
   void initState() {
     super.initState();
-    // wait 3 seconds then go to home screen
-    Future.delayed(Duration(seconds: 3), () {
+    Future.delayed(const Duration(seconds: 3), () {
       Navigator.pushReplacement(
         context,
-        MaterialPageRoute(builder: (context) => CameraScreen()),
+        MaterialPageRoute(builder: (context) => const CameraScreen()),
       );
     });
   }
@@ -25,31 +23,29 @@ class _SplashScreenState extends State<SplashScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.teal,
-      body: Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            // logo placeholder for now
-            Icon(Icons.shield, size: 150, color: Colors.white),
+      body: Stack(
+        children: [
+          // MAP BACKGROUND
+          Positioned.fill(
+            child: Image.asset("assets/map_bg.png", fit: BoxFit.cover),
+          ),
 
-            Text(
-              'GeoKlik',
-              style: TextStyle(
-                fontSize: 36,
-                fontWeight: FontWeight.bold,
-                color: Colors.white,
-              ),
+          // DARK OVERLAY (image ko readable banane ke liye)
+          Container(color: Colors.black.withOpacity(0.25)),
+
+          // CENTER LOGO
+          Center(child: Image.asset("assets/logo_wbg.png", width: 220)),
+
+          // LOADER
+          const Positioned(
+            bottom: 40,
+            left: 0,
+            right: 0,
+            child: Center(
+              child: CircularProgressIndicator(color: Color(0xFFDEB841)),
             ),
-            SizedBox(height: 10),
-            Text(
-              'Authenticate Your World',
-              style: TextStyle(fontSize: 16, color: Colors.white70),
-            ),
-            SizedBox(height: 50),
-            CircularProgressIndicator(color: Colors.white),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }
