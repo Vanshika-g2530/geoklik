@@ -1,3 +1,4 @@
+import 'map_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
 import 'package:geolocator/geolocator.dart';
@@ -10,7 +11,6 @@ import 'dart:ui' as ui;
 
 class CameraScreen extends StatefulWidget {
   const CameraScreen({super.key});
-
   @override
   State<CameraScreen> createState() => _CameraScreenState();
 }
@@ -18,23 +18,17 @@ class CameraScreen extends StatefulWidget {
 class _CameraScreenState extends State<CameraScreen> {
   CameraController? _controller;
   List<CameraDescription>? _cameras;
-
   bool _isCameraReady = false;
   bool _flashOn = false;
   double _zoomLevel = 1.0;
-
   String _latitude = '--';
   String _longitude = '--';
   String _currentTime = '';
   String _currentDate = '';
-
   File? _lastCapturedImage;
   String? _lastHash;
   String? _lastLocation;
   String? _lastTimestamp;
-
-  // for stamping overlay on image
-  // (preview key removed — unused)
 
   @override
   void initState() {
@@ -44,7 +38,6 @@ class _CameraScreenState extends State<CameraScreen> {
     _startTimeUpdates();
   }
 
-  // ── CAMERA ──────────────────────────────────────────────
   Future<void> _initCamera({CameraDescription? cam}) async {
     await Permission.camera.request();
     _cameras = await availableCameras();
@@ -70,18 +63,48 @@ class _CameraScreenState extends State<CameraScreen> {
     await _initCamera(cam: next);
   }
 
-  // ── FLASH ────────────────────────────────────────────────
   Future<void> _toggleFlash() async {
     if (_controller == null) return;
     setState(() => _flashOn = !_flashOn);
     await _controller!.setFlashMode(_flashOn ? FlashMode.torch : FlashMode.off);
   }
 
-  // ── LOCATION ────────────────────────────────────────────
   Future<void> _startLocationUpdates() async {
     final status = await Permission.location.request();
-    if (!status.isGranted) return;
-    Geolocator.getPositionStream().listen((Position pos) {
+    if (!status.isGranted) {
+      setState(() {
+        _latitude = 'Permission denied';
+        _longitude = '';
+      });
+      return;
+    }
+    bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+    if (!serviceEnabled) {
+      setState(() {
+        _latitude = 'GPS is OFF';
+        _longitude = 'Enable in settings';
+      });
+      await Geolocator.openLocationSettings();
+      return;
+    }
+    try {
+      final Position pos = await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.high,
+      );
+      if (!mounted) return;
+      setState(() {
+        _latitude = pos.latitude.toStringAsFixed(6);
+        _longitude = pos.longitude.toStringAsFixed(6);
+      });
+    } catch (e) {
+      debugPrint('Location error: $e');
+    }
+    Geolocator.getPositionStream(
+      locationSettings: const LocationSettings(
+        accuracy: LocationAccuracy.high,
+        distanceFilter: 1,
+      ),
+    ).listen((Position pos) {
       if (!mounted) return;
       setState(() {
         _latitude = pos.latitude.toStringAsFixed(6);
@@ -90,7 +113,6 @@ class _CameraScreenState extends State<CameraScreen> {
     });
   }
 
-  // ── TIME ────────────────────────────────────────────────
   void _startTimeUpdates() {
     Future.doWhile(() async {
       await Future.delayed(const Duration(seconds: 1));
@@ -105,39 +127,24 @@ class _CameraScreenState extends State<CameraScreen> {
     });
   }
 
-  // ── HASH ────────────────────────────────────────────────
-  String _generateHash(Uint8List bytes) {
-    return sha256.convert(bytes).toString();
-  }
+  String _generateHash(Uint8List bytes) => sha256.convert(bytes).toString();
 
-  // ── CAPTURE + STAMP + SAVE ──────────────────────────────
   Future<void> _capturePhoto() async {
     if (_controller == null || !_isCameraReady) return;
-
-    // 1. take raw picture
     final XFile file = await _controller!.takePicture();
     final Uint8List rawBytes = await file.readAsBytes();
-
-    // 2. generate hash of original image
     final String hash = _generateHash(rawBytes);
-
-    // 3. stamp GPS + time watermark onto image
     final Uint8List stampedBytes = await _stampImage(
       rawBytes,
       'Lat: $_latitude  Lon: $_longitude',
       '$_currentDate  $_currentTime',
-      hash.substring(0, 16), // short hash preview
+      hash.substring(0, 16),
     );
-
-    // 4. save stamped image to gallery
     await Gal.requestAccess();
     await Gal.putImageBytes(stampedBytes);
-
-    // 5. save temp file for thumbnail preview
     final tempPath = file.path.replaceAll('.jpg', '_stamped.jpg');
     final tempFile = File(tempPath);
     await tempFile.writeAsBytes(stampedBytes);
-
     if (!mounted) return;
     setState(() {
       _lastCapturedImage = tempFile;
@@ -145,14 +152,13 @@ class _CameraScreenState extends State<CameraScreen> {
       _lastLocation = 'Lat: $_latitude, Lon: $_longitude';
       _lastTimestamp = '$_currentDate  $_currentTime';
     });
-
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Row(
+        content: const Row(
           children: [
-            const Icon(Icons.check_circle, color: Colors.white, size: 18),
-            const SizedBox(width: 8),
-            const Text('Photo saved to gallery!'),
+            Icon(Icons.check_circle, color: Colors.white, size: 18),
+            SizedBox(width: 8),
+            Text('Photo saved to gallery!'),
           ],
         ),
         backgroundColor: const Color(0xFF1B7A4A),
@@ -161,7 +167,6 @@ class _CameraScreenState extends State<CameraScreen> {
     );
   }
 
-  // ── STAMP WATERMARK ON IMAGE ─────────────────────────────
   Future<Uint8List> _stampImage(
     Uint8List imageBytes,
     String line1,
@@ -171,25 +176,19 @@ class _CameraScreenState extends State<CameraScreen> {
     final codec = await ui.instantiateImageCodec(imageBytes);
     final frame = await codec.getNextFrame();
     final image = frame.image;
-
     final recorder = ui.PictureRecorder();
     final canvas = Canvas(recorder);
-
-    // draw original image
     canvas.drawImage(image, Offset.zero, Paint());
-
     final w = image.width.toDouble();
     final h = image.height.toDouble();
-
-    // draw dark banner at bottom
-    final bannerPaint = Paint()..color = const Color(0xCC000000);
-    canvas.drawRect(Rect.fromLTWH(0, h - 110, w, 110), bannerPaint);
-
-    // yellow left accent bar
-    final accentPaint = Paint()..color = const Color(0xFFDEB841);
-    canvas.drawRect(Rect.fromLTWH(0, h - 110, 6, 110), accentPaint);
-
-    // text
+    canvas.drawRect(
+      Rect.fromLTWH(0, h - 110, w, 110),
+      Paint()..color = const Color(0xCC000000),
+    );
+    canvas.drawRect(
+      Rect.fromLTWH(0, h - 110, 6, 110),
+      Paint()..color = const Color(0xFFDEB841),
+    );
     void drawText(
       String text,
       double x,
@@ -222,17 +221,14 @@ class _CameraScreenState extends State<CameraScreen> {
       16,
       color: const Color(0xFF999999),
     );
-
     final picture = recorder.endRecording();
     final finalImage = await picture.toImage(image.width, image.height);
     final byteData = await finalImage.toByteData(
       format: ui.ImageByteFormat.png,
     );
-
     return byteData!.buffer.asUint8List();
   }
 
-  // ── MANUAL LOCATION DIALOG ──────────────────────────────
   void _showManualLocationDialog() {
     final controller = TextEditingController();
     showDialog(
@@ -282,7 +278,6 @@ class _CameraScreenState extends State<CameraScreen> {
     );
   }
 
-  // ── VERIFICATION SCREEN ─────────────────────────────────
   void _openVerification() {
     if (_lastCapturedImage == null) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -306,13 +301,34 @@ class _CameraScreenState extends State<CameraScreen> {
     );
   }
 
+  void _openMap() {
+    if (_latitude == '--' ||
+        _latitude == 'GPS is OFF' ||
+        _latitude == 'Permission denied') {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('GPS not ready yet!')));
+      return;
+    }
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => MapScreen(
+          latitude: double.parse(_latitude),
+          longitude: double.parse(_longitude),
+          timestamp: '$_currentDate  $_currentTime',
+          hash: _lastHash ?? 'No photo yet',
+        ),
+      ),
+    );
+  }
+
   @override
   void dispose() {
     _controller?.dispose();
     super.dispose();
   }
 
-  // ── BUILD ────────────────────────────────────────────────
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -323,15 +339,14 @@ class _CameraScreenState extends State<CameraScreen> {
         title: Image.asset('assets/logo_white.png', height: 25),
         actions: [
           IconButton(
-            onPressed: _showManualLocationDialog,
-            icon: const Icon(Icons.edit_location_alt, color: Color(0xFFDEB841)),
-            tooltip: 'Manual Location',
+            onPressed: _openMap,
+            icon: const Icon(Icons.map, color: Color(0xFFDEB841)),
+            tooltip: 'View on Map',
           ),
         ],
       ),
       body: Stack(
         children: [
-          // CAMERA PREVIEW
           if (_isCameraReady && _controller != null)
             Positioned.fill(child: CameraPreview(_controller!))
           else
@@ -339,7 +354,6 @@ class _CameraScreenState extends State<CameraScreen> {
               child: CircularProgressIndicator(color: Color(0xFFDEB841)),
             ),
 
-          // GPS + TIME OVERLAY
           Positioned(
             bottom: 160,
             left: 12,
@@ -394,7 +408,6 @@ class _CameraScreenState extends State<CameraScreen> {
             ),
           ),
 
-          // FLASH + ZOOM + FLIP
           Positioned(
             bottom: 110,
             left: 0,
@@ -469,10 +482,10 @@ class _CameraScreenState extends State<CameraScreen> {
         ],
       ),
 
-      // BOTTOM BAR
       bottomNavigationBar: Container(
-        height: 80,
+        height: 100,
         color: const Color(0xFF031926),
+        padding: const EdgeInsets.only(bottom: 30),
         child: Row(
           mainAxisAlignment: MainAxisAlignment.spaceAround,
           crossAxisAlignment: CrossAxisAlignment.center,
@@ -499,8 +512,7 @@ class _CameraScreenState extends State<CameraScreen> {
                     : const Icon(Icons.photo, color: Colors.white54, size: 22),
               ),
             ),
-
-            // verify button
+            // verify
             GestureDetector(
               onTap: _openVerification,
               child: Column(
@@ -515,8 +527,7 @@ class _CameraScreenState extends State<CameraScreen> {
                 ],
               ),
             ),
-
-            // SHUTTER
+            // shutter
             GestureDetector(
               onTap: _capturePhoto,
               child: Container(
@@ -538,8 +549,7 @@ class _CameraScreenState extends State<CameraScreen> {
                 ),
               ),
             ),
-
-            // manual location
+            // manual
             GestureDetector(
               onTap: _showManualLocationDialog,
               child: Column(
@@ -554,18 +564,22 @@ class _CameraScreenState extends State<CameraScreen> {
                 ],
               ),
             ),
-
             // gallery
-            Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: const [
-                Icon(Icons.photo_library, color: Colors.white54, size: 22),
-                SizedBox(height: 2),
-                Text(
-                  'Gallery',
-                  style: TextStyle(color: Colors.white54, fontSize: 10),
-                ),
-              ],
+            GestureDetector(
+              onTap: () async {
+                await Gal.open();
+              },
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: const [
+                  Icon(Icons.photo_library, color: Colors.white54, size: 22),
+                  SizedBox(height: 2),
+                  Text(
+                    'Gallery',
+                    style: TextStyle(color: Colors.white54, fontSize: 10),
+                  ),
+                ],
+              ),
             ),
           ],
         ),
@@ -574,7 +588,7 @@ class _CameraScreenState extends State<CameraScreen> {
   }
 }
 
-// ── VERIFICATION SCREEN ──────────────────────────────────────
+// ── VERIFICATION SCREEN ─────────────────────────────────────
 class VerificationScreen extends StatelessWidget {
   final File image;
   final String hash;
@@ -606,7 +620,6 @@ class VerificationScreen extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // image preview
             ClipRRect(
               borderRadius: BorderRadius.circular(12),
               child: Image.file(
@@ -616,8 +629,6 @@ class VerificationScreen extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 20),
-
-            // status card
             Container(
               width: double.infinity,
               padding: const EdgeInsets.all(16),
@@ -654,8 +665,6 @@ class VerificationScreen extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 16),
-
-            // details
             _infoTile(Icons.location_on, 'Location', location),
             _infoTile(Icons.access_time, 'Timestamp', timestamp),
             _infoTile(Icons.lock, 'SHA-256 Hash', hash, mono: true),
