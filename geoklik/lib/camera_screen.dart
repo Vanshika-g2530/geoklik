@@ -70,47 +70,48 @@ class _CameraScreenState extends State<CameraScreen> {
   }
 
   Future<void> _startLocationUpdates() async {
-    final status = await Permission.location.request();
-    if (!status.isGranted) {
+    LocationPermission permission;
+
+    // STEP 1: Check permission
+    permission = await Geolocator.checkPermission();
+
+    if (permission == LocationPermission.denied) {
+      permission = await Geolocator.requestPermission();
+    }
+
+    if (permission == LocationPermission.deniedForever) {
       setState(() {
         _latitude = 'Permission denied';
         _longitude = '';
       });
+      await Geolocator.openAppSettings(); // 🔥 important
       return;
     }
+
+    // STEP 2: Check GPS
     bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
     if (!serviceEnabled) {
       setState(() {
         _latitude = 'GPS is OFF';
-        _longitude = 'Enable in settings';
+        _longitude = 'Turn ON GPS';
       });
-      await Geolocator.openLocationSettings();
+      await Geolocator.openLocationSettings(); // 🔥 important
       return;
     }
+
+    // STEP 3: Get location
     try {
-      final Position pos = await Geolocator.getCurrentPosition(
+      final pos = await Geolocator.getCurrentPosition(
         desiredAccuracy: LocationAccuracy.high,
       );
-      if (!mounted) return;
+
       setState(() {
         _latitude = pos.latitude.toStringAsFixed(6);
         _longitude = pos.longitude.toStringAsFixed(6);
       });
     } catch (e) {
-      debugPrint('Location error: $e');
+      print("Location error: $e");
     }
-    Geolocator.getPositionStream(
-      locationSettings: const LocationSettings(
-        accuracy: LocationAccuracy.high,
-        distanceFilter: 1,
-      ),
-    ).listen((Position pos) {
-      if (!mounted) return;
-      setState(() {
-        _latitude = pos.latitude.toStringAsFixed(6);
-        _longitude = pos.longitude.toStringAsFixed(6);
-      });
-    });
   }
 
   void _startTimeUpdates() {
