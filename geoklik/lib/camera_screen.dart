@@ -2,13 +2,15 @@ import 'map_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
 import 'package:geolocator/geolocator.dart';
-import 'package:geocoding/geocoding.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:gal/gal.dart';
 import 'package:crypto/crypto.dart';
+import 'package:flutter_typeahead/flutter_typeahead.dart';
+import 'package:http/http.dart' as http;
 import 'dart:io';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
+import 'dart:convert';
 
 class CameraScreen extends StatefulWidget {
   const CameraScreen({super.key});
@@ -71,47 +73,37 @@ class _CameraScreenState extends State<CameraScreen> {
   }
 
   Future<void> _startLocationUpdates() async {
-    LocationPermission permission;
-
-    // STEP 1: Check permission
-    permission = await Geolocator.checkPermission();
-
+    LocationPermission permission = await Geolocator.checkPermission();
     if (permission == LocationPermission.denied) {
       permission = await Geolocator.requestPermission();
     }
-
     if (permission == LocationPermission.deniedForever) {
       setState(() {
         _latitude = 'Permission denied';
         _longitude = '';
       });
-      await Geolocator.openAppSettings(); // 🔥 important
+      await Geolocator.openAppSettings();
       return;
     }
-
-    // STEP 2: Check GPS
     bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
     if (!serviceEnabled) {
       setState(() {
         _latitude = 'GPS is OFF';
         _longitude = 'Turn ON GPS';
       });
-      await Geolocator.openLocationSettings(); // 🔥 important
+      await Geolocator.openLocationSettings();
       return;
     }
-
-    // STEP 3: Get location
     try {
       final pos = await Geolocator.getCurrentPosition(
         desiredAccuracy: LocationAccuracy.high,
       );
-
       setState(() {
         _latitude = pos.latitude.toStringAsFixed(6);
         _longitude = pos.longitude.toStringAsFixed(6);
       });
     } catch (e) {
-      print("Location error: $e");
+      debugPrint('Location error: $e');
     }
   }
 
@@ -231,67 +223,245 @@ class _CameraScreenState extends State<CameraScreen> {
     return byteData!.buffer.asUint8List();
   }
 
+  // ── SEARCH LOCATION via OpenStreetMap ───────────────────
+  Future<List<Map>> _searchLocation(String query) async {
+    if (query.length < 3) return [];
+    try {
+      final uri = Uri.parse(
+        'https://nominatim.openstreetmap.org/search?q=${Uri.encodeComponent(query)}&format=json&limit=5&addressdetails=1',
+      );
+      final response = await http.get(
+        uri,
+        headers: {'User-Agent': 'GeoKlik/1.0'},
+      );
+      if (response.statusCode == 200) {
+        final List data = json.decode(response.body);
+        return data.map((e) => Map<String, dynamic>.from(e)).toList();
+      }
+    } catch (e) {
+      debugPrint('Search error: $e');
+    }
+    return [];
+  }
+
+  // ── MANUAL LOCATION with DROPDOWN ───────────────────────
   void _showManualLocationDialog() {
-    final controller = TextEditingController();
+    final textController = TextEditingController();
     showDialog(
       context: context,
-      builder: (ctx) => AlertDialog(
+      builder: (ctx) => Dialog(
         backgroundColor: const Color(0xFF031926),
-        title: const Text(
-          'Manual Location',
-          style: TextStyle(color: Colors.white),
-        ),
-        content: TextField(
-          controller: controller,
-          style: const TextStyle(color: Colors.white),
-          decoration: InputDecoration(
-            hintText: 'e.g. New Delhi, India',
-            hintStyle: TextStyle(color: Colors.grey[500]),
-            enabledBorder: const UnderlineInputBorder(
-              borderSide: BorderSide(color: Color(0xFFDEB841)),
-            ),
-            focusedBorder: const UnderlineInputBorder(
-              borderSide: BorderSide(color: Color(0xFFDEB841)),
-            ),
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
-          ),
-          TextButton(
-            onPressed: () {
-              if (controller.text.isNotEmpty) {
-                locationFromAddress(controller.text)
-                    .then((locations) {
-                      if (locations.isNotEmpty) {
-                        final loc = locations.first;
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        child: Padding(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // title
+              Row(
+                children: [
+                  const Icon(
+                    Icons.location_searching,
+                    color: Color(0xFFDEB841),
+                    size: 22,
+                  ),
+                  const SizedBox(width: 8),
+                  const Text(
+                    'Search Location',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  const Spacer(),
+                  GestureDetector(
+                    onTap: () => Navigator.pop(ctx),
+                    child: const Icon(
+                      Icons.close,
+                      color: Colors.white54,
+                      size: 20,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 16),
 
-                        setState(() {
-                          _latitude = loc.latitude.toStringAsFixed(6);
-                          _longitude = loc.longitude.toStringAsFixed(6);
-                        });
-                      }
-                    })
-                    .catchError((e) {
-                      print("Geocoding error: $e");
-
-                      setState(() {
-                        _latitude = 'Invalid place';
-                        _longitude = '';
-                      });
+              // typeahead search field
+              TypeAheadField<Map>(
+                builder: (ctx, controller, focusNode) {
+                  return TextField(
+                    controller: textController,
+                    focusNode: focusNode,
+                    autofocus: true,
+                    style: const TextStyle(color: Colors.white, fontSize: 14),
+                    decoration: InputDecoration(
+                      hintText: 'Type city, area or address...',
+                      hintStyle: TextStyle(
+                        color: Colors.grey[500],
+                        fontSize: 13,
+                      ),
+                      prefixIcon: const Icon(
+                        Icons.search,
+                        color: Color(0xFFDEB841),
+                        size: 20,
+                      ),
+                      filled: true,
+                      fillColor: Colors.white.withOpacity(0.07),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(10),
+                        borderSide: const BorderSide(color: Color(0xFFDEB841)),
+                      ),
+                      enabledBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(10),
+                        borderSide: BorderSide(
+                          color: Colors.white.withOpacity(0.2),
+                        ),
+                      ),
+                      focusedBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(10),
+                        borderSide: const BorderSide(
+                          color: Color(0xFFDEB841),
+                          width: 1.5,
+                        ),
+                      ),
+                      contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 12,
+                      ),
+                    ),
+                  );
+                },
+                suggestionsCallback: (pattern) async {
+                  return await _searchLocation(pattern);
+                },
+                decorationBuilder: (ctx, child) => Container(
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF042535),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: child,
+                ),
+                itemBuilder: (context, suggestion) {
+                  final name = suggestion['display_name'] ?? '';
+                  final type = suggestion['type'] ?? '';
+                  return Container(
+                    decoration: const BoxDecoration(
+                      border: Border(bottom: BorderSide(color: Colors.white10)),
+                    ),
+                    child: ListTile(
+                      dense: true,
+                      leading: Container(
+                        width: 32,
+                        height: 32,
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFDEB841).withOpacity(0.15),
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: const Icon(
+                          Icons.location_on,
+                          color: Color(0xFFDEB841),
+                          size: 16,
+                        ),
+                      ),
+                      title: Text(
+                        name.length > 60 ? name.substring(0, 60) + '...' : name,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 13,
+                        ),
+                        maxLines: 2,
+                      ),
+                      subtitle: type.isNotEmpty
+                          ? Text(
+                              type,
+                              style: TextStyle(
+                                color: Colors.grey[500],
+                                fontSize: 11,
+                              ),
+                            )
+                          : null,
+                    ),
+                  );
+                },
+                onSelected: (suggestion) {
+                  final lat = suggestion['lat']?.toString() ?? '';
+                  final lon = suggestion['lon']?.toString() ?? '';
+                  final name = suggestion['display_name']?.toString() ?? '';
+                  if (lat.isNotEmpty && lon.isNotEmpty) {
+                    setState(() {
+                      _latitude = double.parse(lat).toStringAsFixed(6);
+                      _longitude = double.parse(lon).toStringAsFixed(6);
                     });
-              }
+                    Navigator.pop(ctx);
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Row(
+                          children: [
+                            const Icon(
+                              Icons.check_circle,
+                              color: Colors.white,
+                              size: 16,
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                'Location set: ${name.length > 35 ? '${name.substring(0, 35)}...' : name}',
+                                style: const TextStyle(fontSize: 12),
+                              ),
+                            ),
+                          ],
+                        ),
+                        backgroundColor: const Color(0xFF1B7A4A),
+                        duration: const Duration(seconds: 3),
+                      ),
+                    );
+                  }
+                },
+                emptyBuilder: (context) => const Padding(
+                  padding: EdgeInsets.all(16),
+                  child: Row(
+                    children: [
+                      Icon(Icons.search_off, color: Colors.white38, size: 18),
+                      SizedBox(width: 8),
+                      Text(
+                        'No locations found',
+                        style: TextStyle(color: Colors.white38, fontSize: 13),
+                      ),
+                    ],
+                  ),
+                ),
+                loadingBuilder: (context) => const Padding(
+                  padding: EdgeInsets.all(16),
+                  child: Row(
+                    children: [
+                      SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: Color(0xFFDEB841),
+                        ),
+                      ),
+                      SizedBox(width: 12),
+                      Text(
+                        'Searching...',
+                        style: TextStyle(color: Colors.white54, fontSize: 13),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
 
-              Navigator.pop(ctx);
-            },
-            child: const Text(
-              'Set',
-              style: TextStyle(color: Color(0xFFDEB841)),
-            ),
+              const SizedBox(height: 12),
+              Text(
+                'Powered by OpenStreetMap',
+                style: TextStyle(color: Colors.grey[600], fontSize: 10),
+              ),
+            ],
           ),
-        ],
+        ),
       ),
     );
   }
@@ -320,20 +490,23 @@ class _CameraScreenState extends State<CameraScreen> {
   }
 
   void _openMap() {
-    if (_latitude == '--' ||
-        _latitude == 'GPS is OFF' ||
-        _latitude == 'Permission denied') {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('GPS not ready yet!')));
+    final double? lat = double.tryParse(_latitude);
+    final double? lon = double.tryParse(_longitude);
+    if (lat == null || lon == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Valid GPS coordinates needed to open map!'),
+          backgroundColor: Colors.red,
+        ),
+      );
       return;
     }
     Navigator.push(
       context,
       MaterialPageRoute(
         builder: (_) => MapScreen(
-          latitude: double.parse(_latitude),
-          longitude: double.parse(_longitude),
+          latitude: lat,
+          longitude: lon,
           timestamp: '$_currentDate  $_currentTime',
           hash: _lastHash ?? 'No photo yet',
         ),
@@ -508,7 +681,6 @@ class _CameraScreenState extends State<CameraScreen> {
           mainAxisAlignment: MainAxisAlignment.spaceAround,
           crossAxisAlignment: CrossAxisAlignment.center,
           children: [
-            // thumbnail
             GestureDetector(
               onTap: _openVerification,
               child: Container(
@@ -530,7 +702,6 @@ class _CameraScreenState extends State<CameraScreen> {
                     : const Icon(Icons.photo, color: Colors.white54, size: 22),
               ),
             ),
-            // verify
             GestureDetector(
               onTap: _openVerification,
               child: Column(
@@ -545,7 +716,6 @@ class _CameraScreenState extends State<CameraScreen> {
                 ],
               ),
             ),
-            // shutter
             GestureDetector(
               onTap: _capturePhoto,
               child: Container(
@@ -567,22 +737,24 @@ class _CameraScreenState extends State<CameraScreen> {
                 ),
               ),
             ),
-            // manual
             GestureDetector(
               onTap: _showManualLocationDialog,
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: const [
-                  Icon(Icons.edit_location, color: Colors.white54, size: 22),
+                  Icon(
+                    Icons.location_searching,
+                    color: Color(0xFFDEB841),
+                    size: 22,
+                  ),
                   SizedBox(height: 2),
                   Text(
-                    'Manual',
-                    style: TextStyle(color: Colors.white54, fontSize: 10),
+                    'Search',
+                    style: TextStyle(color: Color(0xFFDEB841), fontSize: 10),
                   ),
                 ],
               ),
             ),
-            // gallery
             GestureDetector(
               onTap: () async {
                 await Gal.open();
