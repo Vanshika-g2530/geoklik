@@ -80,7 +80,7 @@ class HomeScreen extends StatelessWidget {
                   ),
                 ),
 
-                onPressed: () async {
+                onPressed: () {
                   Navigator.push(
                     context,
                     MaterialPageRoute(

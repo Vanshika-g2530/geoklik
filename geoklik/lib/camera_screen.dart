@@ -2,7 +2,6 @@ import 'map_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
 import 'package:geolocator/geolocator.dart';
-import 'package:geocoding/geocoding.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:gal/gal.dart';
 import 'package:crypto/crypto.dart';
@@ -263,27 +262,11 @@ class _CameraScreenState extends State<CameraScreen> {
           TextButton(
             onPressed: () {
               if (controller.text.isNotEmpty) {
-                locationFromAddress(controller.text)
-                    .then((locations) {
-                      if (locations.isNotEmpty) {
-                        final loc = locations.first;
-
-                        setState(() {
-                          _latitude = loc.latitude.toStringAsFixed(6);
-                          _longitude = loc.longitude.toStringAsFixed(6);
-                        });
-                      }
-                    })
-                    .catchError((e) {
-                      print("Geocoding error: $e");
-
-                      setState(() {
-                        _latitude = 'Invalid place';
-                        _longitude = '';
-                      });
-                    });
+                setState(() {
+                  _latitude = controller.text;
+                  _longitude = 'Manual';
+                });
               }
-
               Navigator.pop(ctx);
             },
             child: const Text(
