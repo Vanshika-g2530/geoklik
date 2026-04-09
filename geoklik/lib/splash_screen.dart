@@ -1,3 +1,4 @@
+import 'package:geolocator/geolocator.dart';
 import 'package:flutter/material.dart';
 import 'camera_screen.dart';
 
@@ -12,12 +13,53 @@ class _SplashScreenState extends State<SplashScreen> {
   @override
   void initState() {
     super.initState();
-    Future.delayed(const Duration(seconds: 3), () {
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(builder: (context) => const CameraScreen()),
-      );
-    });
+    _loadApp();
+  }
+
+  Future<void> _loadApp() async {
+    String latitude = '--';
+    String longitude = '--';
+
+    try {
+      // Permission
+      LocationPermission permission = await Geolocator.checkPermission();
+
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+      }
+
+      // Get location
+      if (permission != LocationPermission.denied &&
+          permission != LocationPermission.deniedForever) {
+        bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+
+        if (serviceEnabled) {
+          final pos = await Geolocator.getCurrentPosition(
+            desiredAccuracy: LocationAccuracy.high,
+          );
+
+          latitude = pos.latitude.toStringAsFixed(6);
+          longitude = pos.longitude.toStringAsFixed(6);
+        }
+      }
+    } catch (e) {
+      print("Splash location error: $e");
+    }
+
+    // ⏳ Delay (increase slightly if you want)
+    await Future.delayed(const Duration(seconds: 4));
+
+    if (!mounted) return;
+
+    Navigator.pushReplacement(
+      context,
+      MaterialPageRoute(
+        builder: (context) => CameraScreen(
+          initialLatitude: latitude,
+          initialLongitude: longitude,
+        ),
+      ),
+    );
   }
 
   @override

@@ -10,7 +10,15 @@ import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 class CameraScreen extends StatefulWidget {
-  const CameraScreen({super.key});
+  final String initialLatitude;
+  final String initialLongitude;
+
+  const CameraScreen({
+    super.key,
+    this.initialLatitude = '--',
+    this.initialLongitude = '--',
+  });
+
   @override
   State<CameraScreen> createState() => _CameraScreenState();
 }
@@ -34,6 +42,11 @@ class _CameraScreenState extends State<CameraScreen> {
   void initState() {
     super.initState();
     _initCamera();
+
+    // 🔥 SET initial values from splash
+    _latitude = widget.initialLatitude;
+    _longitude = widget.initialLongitude;
+
     _startLocationUpdates();
     _startTimeUpdates();
   }
@@ -230,54 +243,54 @@ class _CameraScreenState extends State<CameraScreen> {
     return byteData!.buffer.asUint8List();
   }
 
-  void _showManualLocationDialog() {
-    final controller = TextEditingController();
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF031926),
-        title: const Text(
-          'Manual Location',
-          style: TextStyle(color: Colors.white),
-        ),
-        content: TextField(
-          controller: controller,
-          style: const TextStyle(color: Colors.white),
-          decoration: InputDecoration(
-            hintText: 'e.g. New Delhi, India',
-            hintStyle: TextStyle(color: Colors.grey[500]),
-            enabledBorder: const UnderlineInputBorder(
-              borderSide: BorderSide(color: Color(0xFFDEB841)),
-            ),
-            focusedBorder: const UnderlineInputBorder(
-              borderSide: BorderSide(color: Color(0xFFDEB841)),
-            ),
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
-          ),
-          TextButton(
-            onPressed: () {
-              if (controller.text.isNotEmpty) {
-                setState(() {
-                  _latitude = controller.text;
-                  _longitude = 'Manual';
-                });
-              }
-              Navigator.pop(ctx);
-            },
-            child: const Text(
-              'Set',
-              style: TextStyle(color: Color(0xFFDEB841)),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
+  // void _showManualLocationDialog() {
+  //   final controller = TextEditingController();
+  //   showDialog(
+  //     context: context,
+  //     builder: (ctx) => AlertDialog(
+  //       backgroundColor: const Color(0xFF031926),
+  //       title: const Text(
+  //         'Manual Location',
+  //         style: TextStyle(color: Colors.white),
+  //       ),
+  //       content: TextField(
+  //         controller: controller,
+  //         style: const TextStyle(color: Colors.white),
+  //         decoration: InputDecoration(
+  //           hintText: 'e.g. New Delhi, India',
+  //           hintStyle: TextStyle(color: Colors.grey[500]),
+  //           enabledBorder: const UnderlineInputBorder(
+  //             borderSide: BorderSide(color: Color(0xFFDEB841)),
+  //           ),
+  //           focusedBorder: const UnderlineInputBorder(
+  //             borderSide: BorderSide(color: Color(0xFFDEB841)),
+  //           ),
+  //         ),
+  //       ),
+  //       actions: [
+  //         TextButton(
+  //           onPressed: () => Navigator.pop(ctx),
+  //           child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
+  //         ),
+  //         TextButton(
+  //           onPressed: () {
+  //             if (controller.text.isNotEmpty) {
+  //               setState(() {
+  //                 _latitude = controller.text;
+  //                 _longitude = 'Manual';
+  //               });
+  //             }
+  //             Navigator.pop(ctx);
+  //           },
+  //           child: const Text(
+  //             'Set',
+  //             style: TextStyle(color: Color(0xFFDEB841)),
+  //           ),
+  //         ),
+  //       ],
+  //     ),
+  //   );
+  // }
 
   void _openVerification() {
     if (_lastCapturedImage == null) {
@@ -338,13 +351,7 @@ class _CameraScreenState extends State<CameraScreen> {
         backgroundColor: const Color(0xFF031926),
         elevation: 0,
         title: Image.asset('assets/logo_white.png', height: 25),
-        actions: [
-          IconButton(
-            onPressed: _openMap,
-            icon: const Icon(Icons.map, color: Color(0xFFDEB841)),
-            tooltip: 'View on Map',
-          ),
-        ],
+        actions: [],
       ),
       body: Stack(
         children: [
@@ -551,20 +558,22 @@ class _CameraScreenState extends State<CameraScreen> {
               ),
             ),
             // manual
+            // map
             GestureDetector(
-              onTap: _showManualLocationDialog,
+              onTap: _openMap,
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: const [
-                  Icon(Icons.edit_location, color: Colors.white54, size: 22),
+                  Icon(Icons.map, color: Colors.white54, size: 22),
                   SizedBox(height: 2),
                   Text(
-                    'Manual',
+                    'Map',
                     style: TextStyle(color: Colors.white54, fontSize: 10),
                   ),
                 ],
               ),
             ),
+
             // gallery
             GestureDetector(
               onTap: () async {
