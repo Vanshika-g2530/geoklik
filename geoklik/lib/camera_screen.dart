@@ -2,6 +2,7 @@ import 'map_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:geocoding/geocoding.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:gal/gal.dart';
 import 'package:crypto/crypto.dart';
@@ -24,155 +25,234 @@ class CameraScreen extends StatefulWidget {
 }
 
 class _CameraScreenState extends State<CameraScreen> {
-  CameraController? _controller;
-  List<CameraDescription>? _cameras;
-  bool _isCameraReady = false;
-  bool _flashOn = false;
-  double _zoomLevel = 1.0;
-  String _latitude = '--';
-  String _longitude = '--';
-  String _currentTime = '';
-  String _currentDate = '';
-  File? _lastCapturedImage;
-  String? _lastHash;
-  String? _lastLocation;
-  String? _lastTimestamp;
+  CameraController? controller;
+  List<CameraDescription>? cameras;
+  bool cameraReady = false;
+  bool flashOn = false;
+  double zoomLevel = 1.0;
+
+  String lat = '--';
+  String lon = '--';
+  String address = '';
+  String currentTime = '';
+  String currentDate = '';
+
+  File? lastPhoto;
+  String? lastHash;
+  String? lastLocation;
+  String? lastTimestamp;
 
   @override
   void initState() {
     super.initState();
-    _initCamera();
-
-    // 🔥 SET initial values from splash
-    _latitude = widget.initialLatitude;
-    _longitude = widget.initialLongitude;
-
-    _startLocationUpdates();
-    _startTimeUpdates();
+    lat = widget.initialLatitude;
+    lon = widget.initialLongitude;
+    setupCamera();
+    getLocation();
+    startClock();
   }
 
-  Future<void> _initCamera({CameraDescription? cam}) async {
+  Future<void> setupCamera({CameraDescription? cam}) async {
     await Permission.camera.request();
-    _cameras = await availableCameras();
-    final desc = cam ?? _cameras!.first;
-    _controller = CameraController(
+    cameras = await availableCameras();
+    final desc = cam ?? cameras!.first;
+    controller = CameraController(
       desc,
       ResolutionPreset.high,
       enableAudio: false,
     );
-    await _controller!.initialize();
+    await controller!.initialize();
     if (!mounted) return;
-    setState(() => _isCameraReady = true);
+    setState(() => cameraReady = true);
   }
 
-  Future<void> _toggleCamera() async {
-    if (_cameras == null) return;
-    final current = _controller!.description;
-    final next = _cameras!.firstWhere(
-      (c) => c.lensDirection != current.lensDirection,
+  Future<void> flipCamera() async {
+    if (cameras == null) return;
+    final curr = controller!.description;
+    final next = cameras!.firstWhere(
+      (c) => c.lensDirection != curr.lensDirection,
     );
-    await _controller?.dispose();
-    setState(() => _isCameraReady = false);
-    await _initCamera(cam: next);
+    await controller?.dispose();
+    setState(() => cameraReady = false);
+    await setupCamera(cam: next);
   }
 
-  Future<void> _toggleFlash() async {
-    if (_controller == null) return;
-    setState(() => _flashOn = !_flashOn);
-    await _controller!.setFlashMode(_flashOn ? FlashMode.torch : FlashMode.off);
+  Future<void> toggleFlash() async {
+    if (controller == null) return;
+    setState(() => flashOn = !flashOn);
+    await controller!.setFlashMode(flashOn ? FlashMode.torch : FlashMode.off);
   }
 
-  Future<void> _startLocationUpdates() async {
-    LocationPermission permission;
-
-    // STEP 1: Check permission
-    permission = await Geolocator.checkPermission();
-
-    if (permission == LocationPermission.denied) {
-      permission = await Geolocator.requestPermission();
+  Future<void> getLocation() async {
+    LocationPermission perm = await Geolocator.checkPermission();
+    if (perm == LocationPermission.denied) {
+      perm = await Geolocator.requestPermission();
     }
-
-    if (permission == LocationPermission.deniedForever) {
+    if (perm == LocationPermission.deniedForever) {
       setState(() {
-        _latitude = 'Permission denied';
-        _longitude = '';
+        lat = 'Permission denied';
+        lon = '';
       });
-      await Geolocator.openAppSettings(); // 🔥 important
+      await Geolocator.openAppSettings();
       return;
     }
 
-    // STEP 2: Check GPS
-    bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
-    if (!serviceEnabled) {
+    bool gpsOn = await Geolocator.isLocationServiceEnabled();
+    if (!gpsOn) {
       setState(() {
-        _latitude = 'GPS is OFF';
-        _longitude = 'Turn ON GPS';
+        lat = 'GPS is OFF';
+        lon = 'Turn ON GPS';
       });
-      await Geolocator.openLocationSettings(); // 🔥 important
+      await Geolocator.openLocationSettings();
       return;
     }
 
-    // STEP 3: Get location
     try {
       final pos = await Geolocator.getCurrentPosition(
         desiredAccuracy: LocationAccuracy.high,
       );
-
       setState(() {
-        _latitude = pos.latitude.toStringAsFixed(6);
-        _longitude = pos.longitude.toStringAsFixed(6);
+        lat = pos.latitude.toStringAsFixed(6);
+        lon = pos.longitude.toStringAsFixed(6);
       });
+      // get address from lat lon
+      getAddress(pos.latitude, pos.longitude);
     } catch (e) {
-      print("Location error: $e");
+      print("location error $e");
     }
   }
 
-  void _startTimeUpdates() {
+  Future<void> getAddress(double latitude, double longitude) async {
+    try {
+      List<Placemark> placemarks = await placemarkFromCoordinates(
+        latitude,
+        longitude,
+      );
+      if (placemarks.isNotEmpty) {
+        Placemark place = placemarks[0];
+        String addr = '';
+        if (place.subLocality != null && place.subLocality!.isNotEmpty) {
+          addr += place.subLocality! + ', ';
+        }
+        if (place.locality != null && place.locality!.isNotEmpty) {
+          addr += place.locality! + ', ';
+        }
+        if (place.administrativeArea != null &&
+            place.administrativeArea!.isNotEmpty) {
+          addr += place.administrativeArea!;
+        }
+        setState(() => address = addr.trim());
+      }
+    } catch (e) {
+      print("address error $e");
+    }
+  }
+
+  void startClock() {
     Future.doWhile(() async {
       await Future.delayed(const Duration(seconds: 1));
       if (!mounted) return false;
       final now = DateTime.now();
       setState(() {
-        _currentTime =
+        currentTime =
             '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}:${now.second.toString().padLeft(2, '0')}';
-        _currentDate = '${now.day}/${now.month}/${now.year}';
+        currentDate = '${now.day}/${now.month}/${now.year}';
       });
       return true;
     });
   }
 
-  String _generateHash(Uint8List bytes) => sha256.convert(bytes).toString();
+  String makeHash(Uint8List bytes) => sha256.convert(bytes).toString();
 
-  Future<void> _capturePhoto() async {
-    if (_controller == null || !_isCameraReady) return;
-    final XFile file = await _controller!.takePicture();
+  Future<void> takePhoto() async {
+    if (controller == null || !cameraReady) return;
+
+    final XFile file = await controller!.takePicture();
     final Uint8List rawBytes = await file.readAsBytes();
-    final String hash = _generateHash(rawBytes);
-    final Uint8List stampedBytes = await _stampImage(
-      rawBytes,
-      'Lat: $_latitude  Lon: $_longitude',
-      '$_currentDate  $_currentTime',
-      hash.substring(0, 16),
+    final String hash = makeHash(rawBytes);
+
+    // show export dialog — with stamp or without
+    bool? withStamp = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF031926),
+        title: const Text(
+          'Save Photo',
+          style: TextStyle(color: Colors.white, fontSize: 16),
+        ),
+        content: const Text(
+          'How do you want to save this photo?',
+          style: TextStyle(color: Colors.white70, fontSize: 13),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text(
+              'Without Stamp',
+              style: TextStyle(color: Colors.grey),
+            ),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text(
+              'With Stamp',
+              style: TextStyle(color: Color(0xFFDEB841)),
+            ),
+          ),
+        ],
+      ),
     );
+
+    if (withStamp == null) return; // user dismissed
+
     await Gal.requestAccess();
-    await Gal.putImageBytes(stampedBytes);
-    final tempPath = file.path.replaceAll('.jpg', '_stamped.jpg');
-    final tempFile = File(tempPath);
-    await tempFile.writeAsBytes(stampedBytes);
-    if (!mounted) return;
+
+    if (withStamp) {
+      // stamp and save
+      String stampAddr = address.isNotEmpty ? address : 'Lat: $lat  Lon: $lon';
+      final Uint8List stamped = await addStamp(
+        rawBytes,
+        stampAddr,
+        '$currentDate  $currentTime',
+        hash.substring(0, 16),
+      );
+      await Gal.putImageBytes(stamped);
+
+      // save temp file for preview
+      final tempPath = file.path.replaceAll('.jpg', '_stamped.jpg');
+      final tempFile = File(tempPath);
+      await tempFile.writeAsBytes(stamped);
+      if (!mounted) return;
+      setState(() {
+        lastPhoto = tempFile;
+      });
+    } else {
+      // save original without stamp
+      await Gal.putImageBytes(rawBytes);
+      if (!mounted) return;
+      setState(() {
+        lastPhoto = File(file.path);
+      });
+    }
+
     setState(() {
-      _lastCapturedImage = tempFile;
-      _lastHash = hash;
-      _lastLocation = 'Lat: $_latitude, Lon: $_longitude';
-      _lastTimestamp = '$_currentDate  $_currentTime';
+      lastHash = hash;
+      lastLocation = address.isNotEmpty ? address : 'Lat: $lat, Lon: $lon';
+      lastTimestamp = '$currentDate  $currentTime';
     });
+
+    if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: const Row(
+        content: Row(
           children: [
-            Icon(Icons.check_circle, color: Colors.white, size: 18),
-            SizedBox(width: 8),
-            Text('Photo saved to gallery!'),
+            const Icon(Icons.check_circle, color: Colors.white, size: 18),
+            const SizedBox(width: 8),
+            Text(
+              withStamp
+                  ? 'Photo saved with stamp!'
+                  : 'Photo saved without stamp!',
+            ),
           ],
         ),
         backgroundColor: const Color(0xFF1B7A4A),
@@ -181,122 +261,72 @@ class _CameraScreenState extends State<CameraScreen> {
     );
   }
 
-  Future<Uint8List> _stampImage(
-    Uint8List imageBytes,
+  Future<Uint8List> addStamp(
+    Uint8List imgBytes,
     String line1,
     String line2,
-    String hashPreview,
+    String hashShort,
   ) async {
-    final codec = await ui.instantiateImageCodec(imageBytes);
+    final codec = await ui.instantiateImageCodec(imgBytes);
     final frame = await codec.getNextFrame();
-    final image = frame.image;
+    final img = frame.image;
+
     final recorder = ui.PictureRecorder();
     final canvas = Canvas(recorder);
-    canvas.drawImage(image, Offset.zero, Paint());
-    final w = image.width.toDouble();
-    final h = image.height.toDouble();
+    canvas.drawImage(img, Offset.zero, Paint());
+
+    final w = img.width.toDouble();
+    final h = img.height.toDouble();
+
+    // dark bg at bottom
     canvas.drawRect(
-      Rect.fromLTWH(0, h - 110, w, 110),
+      Rect.fromLTWH(0, h - 130, w, 130),
       Paint()..color = const Color(0xCC000000),
     );
+    // yellow bar on left
     canvas.drawRect(
-      Rect.fromLTWH(0, h - 110, 6, 110),
+      Rect.fromLTWH(0, h - 130, 6, 130),
       Paint()..color = const Color(0xFFDEB841),
     );
-    void drawText(
-      String text,
+
+    void putText(
+      String txt,
       double x,
       double y,
-      double fontSize, {
-      Color color = Colors.white,
+      double size, {
+      Color col = Colors.white,
     }) {
       final tp = TextPainter(
         text: TextSpan(
-          text: text,
+          text: txt,
           style: TextStyle(
-            color: color,
-            fontSize: fontSize,
+            color: col,
+            fontSize: size,
             fontWeight: FontWeight.w600,
           ),
         ),
         textDirection: TextDirection.ltr,
       );
-      tp.layout();
+      tp.layout(maxWidth: w - 40);
       tp.paint(canvas, Offset(x, y));
     }
 
-    drawText('GeoKlik', 20, h - 105, 28, color: const Color(0xFFDEB841));
-    drawText(line1, 20, h - 72, 22);
-    drawText(line2, 20, h - 44, 20, color: const Color(0xFFCCCCCC));
-    drawText(
-      'SHA: $hashPreview...',
-      20,
-      h - 20,
-      16,
-      color: const Color(0xFF999999),
-    );
-    final picture = recorder.endRecording();
-    final finalImage = await picture.toImage(image.width, image.height);
-    final byteData = await finalImage.toByteData(
-      format: ui.ImageByteFormat.png,
-    );
-    return byteData!.buffer.asUint8List();
+    putText('GeoKlik', 20, h - 125, 26, col: const Color(0xFFDEB841));
+    putText(line1, 20, h - 94, 18); // address or lat lon
+    putText(line2, 20, h - 68, 16, col: const Color(0xFFCCCCCC));
+    putText('SHA: $hashShort...', 20, h - 44, 14, col: const Color(0xFF999999));
+
+    final pic = recorder.endRecording();
+    final finalImg = await pic.toImage(img.width, img.height);
+    final data = await finalImg.toByteData(format: ui.ImageByteFormat.png);
+    return data!.buffer.asUint8List();
   }
 
-  // void _showManualLocationDialog() {
-  //   final controller = TextEditingController();
-  //   showDialog(
-  //     context: context,
-  //     builder: (ctx) => AlertDialog(
-  //       backgroundColor: const Color(0xFF031926),
-  //       title: const Text(
-  //         'Manual Location',
-  //         style: TextStyle(color: Colors.white),
-  //       ),
-  //       content: TextField(
-  //         controller: controller,
-  //         style: const TextStyle(color: Colors.white),
-  //         decoration: InputDecoration(
-  //           hintText: 'e.g. New Delhi, India',
-  //           hintStyle: TextStyle(color: Colors.grey[500]),
-  //           enabledBorder: const UnderlineInputBorder(
-  //             borderSide: BorderSide(color: Color(0xFFDEB841)),
-  //           ),
-  //           focusedBorder: const UnderlineInputBorder(
-  //             borderSide: BorderSide(color: Color(0xFFDEB841)),
-  //           ),
-  //         ),
-  //       ),
-  //       actions: [
-  //         TextButton(
-  //           onPressed: () => Navigator.pop(ctx),
-  //           child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
-  //         ),
-  //         TextButton(
-  //           onPressed: () {
-  //             if (controller.text.isNotEmpty) {
-  //               setState(() {
-  //                 _latitude = controller.text;
-  //                 _longitude = 'Manual';
-  //               });
-  //             }
-  //             Navigator.pop(ctx);
-  //           },
-  //           child: const Text(
-  //             'Set',
-  //             style: TextStyle(color: Color(0xFFDEB841)),
-  //           ),
-  //         ),
-  //       ],
-  //     ),
-  //   );
-  // }
-
-  void _openVerification() {
-    if (_lastCapturedImage == null) {
+  void openVerification() {
+    if (lastPhoto == null) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('No photo captured yet!'),
+          content: Text('No photo yet!'),
           backgroundColor: Colors.red,
         ),
       );
@@ -306,32 +336,35 @@ class _CameraScreenState extends State<CameraScreen> {
       context,
       MaterialPageRoute(
         builder: (_) => VerificationScreen(
-          image: _lastCapturedImage!,
-          hash: _lastHash ?? '--',
-          location: _lastLocation ?? '--',
-          timestamp: _lastTimestamp ?? '--',
+          image: lastPhoto!,
+          hash: lastHash ?? '--',
+          location: lastLocation ?? '--',
+          timestamp: lastTimestamp ?? '--',
         ),
       ),
     );
   }
 
-  void _openMap() {
-    if (_latitude == '--' ||
-        _latitude == 'GPS is OFF' ||
-        _latitude == 'Permission denied') {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('GPS not ready yet!')));
+  void openMap() {
+    final double? lt = double.tryParse(lat);
+    final double? lg = double.tryParse(lon);
+    if (lt == null || lg == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('GPS coordinates not ready!'),
+          backgroundColor: Colors.red,
+        ),
+      );
       return;
     }
     Navigator.push(
       context,
       MaterialPageRoute(
         builder: (_) => MapScreen(
-          latitude: double.parse(_latitude),
-          longitude: double.parse(_longitude),
-          timestamp: '$_currentDate  $_currentTime',
-          hash: _lastHash ?? 'No photo yet',
+          latitude: lt,
+          longitude: lg,
+          timestamp: '$currentDate  $currentTime',
+          hash: lastHash ?? 'No photo yet',
         ),
       ),
     );
@@ -339,7 +372,7 @@ class _CameraScreenState extends State<CameraScreen> {
 
   @override
   void dispose() {
-    _controller?.dispose();
+    controller?.dispose();
     super.dispose();
   }
 
@@ -351,17 +384,23 @@ class _CameraScreenState extends State<CameraScreen> {
         backgroundColor: const Color(0xFF031926),
         elevation: 0,
         title: Image.asset('assets/logo_white.png', height: 25),
-        actions: [],
+        actions: [
+          IconButton(
+            onPressed: openMap,
+            icon: const Icon(Icons.map, color: Color(0xFFDEB841)),
+          ),
+        ],
       ),
       body: Stack(
         children: [
-          if (_isCameraReady && _controller != null)
-            Positioned.fill(child: CameraPreview(_controller!))
+          if (cameraReady && controller != null)
+            Positioned.fill(child: CameraPreview(controller!))
           else
             const Center(
               child: CircularProgressIndicator(color: Color(0xFFDEB841)),
             ),
 
+          // gps + address overlay
           Positioned(
             bottom: 160,
             left: 12,
@@ -384,15 +423,28 @@ class _CameraScreenState extends State<CameraScreen> {
                         size: 14,
                       ),
                       const SizedBox(width: 4),
-                      Text(
-                        'Lat: $_latitude  Lon: $_longitude',
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 12,
+                      Expanded(
+                        child: Text(
+                          address.isNotEmpty ? address : 'Lat: $lat  Lon: $lon',
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 12,
+                          ),
+                          overflow: TextOverflow.ellipsis,
                         ),
                       ),
                     ],
                   ),
+                  if (address.isNotEmpty) ...[
+                    const SizedBox(height: 2),
+                    Text(
+                      '$lat, $lon',
+                      style: const TextStyle(
+                        color: Colors.white54,
+                        fontSize: 10,
+                      ),
+                    ),
+                  ],
                   const SizedBox(height: 4),
                   Row(
                     children: [
@@ -403,7 +455,7 @@ class _CameraScreenState extends State<CameraScreen> {
                       ),
                       const SizedBox(width: 4),
                       Text(
-                        '$_currentDate  $_currentTime',
+                        '$currentDate  $currentTime',
                         style: const TextStyle(
                           color: Colors.white70,
                           fontSize: 11,
@@ -416,6 +468,7 @@ class _CameraScreenState extends State<CameraScreen> {
             ),
           ),
 
+          // flash zoom flip
           Positioned(
             bottom: 110,
             left: 0,
@@ -424,10 +477,10 @@ class _CameraScreenState extends State<CameraScreen> {
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
                 IconButton(
-                  onPressed: _toggleFlash,
+                  onPressed: toggleFlash,
                   icon: Icon(
-                    _flashOn ? Icons.flash_on : Icons.flash_off,
-                    color: _flashOn ? const Color(0xFFDEB841) : Colors.white,
+                    flashOn ? Icons.flash_on : Icons.flash_off,
+                    color: flashOn ? const Color(0xFFDEB841) : Colors.white,
                   ),
                 ),
                 const SizedBox(width: 20),
@@ -444,13 +497,13 @@ class _CameraScreenState extends State<CameraScreen> {
                     children: [
                       GestureDetector(
                         onTap: () async {
-                          await _controller!.setZoomLevel(1.0);
-                          setState(() => _zoomLevel = 1.0);
+                          await controller!.setZoomLevel(1.0);
+                          setState(() => zoomLevel = 1.0);
                         },
                         child: Text(
                           '1x',
                           style: TextStyle(
-                            color: _zoomLevel == 1.0
+                            color: zoomLevel == 1.0
                                 ? const Color(0xFFDEB841)
                                 : Colors.white,
                             fontWeight: FontWeight.bold,
@@ -460,13 +513,13 @@ class _CameraScreenState extends State<CameraScreen> {
                       const SizedBox(width: 10),
                       GestureDetector(
                         onTap: () async {
-                          await _controller!.setZoomLevel(2.0);
-                          setState(() => _zoomLevel = 2.0);
+                          await controller!.setZoomLevel(2.0);
+                          setState(() => zoomLevel = 2.0);
                         },
                         child: Text(
                           '2x',
                           style: TextStyle(
-                            color: _zoomLevel == 2.0
+                            color: zoomLevel == 2.0
                                 ? const Color(0xFFDEB841)
                                 : Colors.white,
                             fontWeight: FontWeight.bold,
@@ -478,7 +531,7 @@ class _CameraScreenState extends State<CameraScreen> {
                 ),
                 const SizedBox(width: 20),
                 IconButton(
-                  onPressed: _toggleCamera,
+                  onPressed: flipCamera,
                   icon: const Icon(
                     Icons.flip_camera_android,
                     color: Colors.white,
@@ -498,9 +551,9 @@ class _CameraScreenState extends State<CameraScreen> {
           mainAxisAlignment: MainAxisAlignment.spaceAround,
           crossAxisAlignment: CrossAxisAlignment.center,
           children: [
-            // thumbnail
+            // last photo thumbnail
             GestureDetector(
-              onTap: _openVerification,
+              onTap: openVerification,
               child: Container(
                 width: 44,
                 height: 44,
@@ -509,20 +562,17 @@ class _CameraScreenState extends State<CameraScreen> {
                   color: Colors.black,
                   border: Border.all(color: Colors.white24),
                 ),
-                child: _lastCapturedImage != null
+                child: lastPhoto != null
                     ? ClipRRect(
                         borderRadius: BorderRadius.circular(7),
-                        child: Image.file(
-                          _lastCapturedImage!,
-                          fit: BoxFit.cover,
-                        ),
+                        child: Image.file(lastPhoto!, fit: BoxFit.cover),
                       )
                     : const Icon(Icons.photo, color: Colors.white54, size: 22),
               ),
             ),
-            // verify
+
             GestureDetector(
-              onTap: _openVerification,
+              onTap: openVerification,
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: const [
@@ -535,9 +585,10 @@ class _CameraScreenState extends State<CameraScreen> {
                 ],
               ),
             ),
-            // shutter
+
+            // shutter button
             GestureDetector(
-              onTap: _capturePhoto,
+              onTap: takePhoto,
               child: Container(
                 width: 64,
                 height: 64,
@@ -557,10 +608,9 @@ class _CameraScreenState extends State<CameraScreen> {
                 ),
               ),
             ),
-            // manual
-            // map
+
             GestureDetector(
-              onTap: _openMap,
+              onTap: openMap,
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: const [
@@ -574,7 +624,6 @@ class _CameraScreenState extends State<CameraScreen> {
               ),
             ),
 
-            // gallery
             GestureDetector(
               onTap: () async {
                 await Gal.open();
@@ -598,7 +647,6 @@ class _CameraScreenState extends State<CameraScreen> {
   }
 }
 
-// ── VERIFICATION SCREEN ─────────────────────────────────────
 class VerificationScreen extends StatelessWidget {
   final File image;
   final String hash;
@@ -639,6 +687,7 @@ class VerificationScreen extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 20),
+
             Container(
               width: double.infinity,
               padding: const EdgeInsets.all(16),
@@ -675,16 +724,17 @@ class VerificationScreen extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 16),
-            _infoTile(Icons.location_on, 'Location', location),
-            _infoTile(Icons.access_time, 'Timestamp', timestamp),
-            _infoTile(Icons.lock, 'SHA-256 Hash', hash, mono: true),
+
+            infoTile(Icons.location_on, 'Location', location),
+            infoTile(Icons.access_time, 'Timestamp', timestamp),
+            infoTile(Icons.lock, 'SHA-256 Hash', hash, mono: true),
           ],
         ),
       ),
     );
   }
 
-  Widget _infoTile(
+  Widget infoTile(
     IconData icon,
     String label,
     String value, {
