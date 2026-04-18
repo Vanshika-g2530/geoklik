@@ -9,10 +9,24 @@ class SplashScreen extends StatefulWidget {
   State<SplashScreen> createState() => _SplashScreenState();
 }
 
-class _SplashScreenState extends State<SplashScreen> {
+class _SplashScreenState extends State<SplashScreen>
+    with SingleTickerProviderStateMixin {
+  String statusText = "Getting location...";
+  double opacity = 0.0;
+  double scale = 0.8;
+
   @override
   void initState() {
     super.initState();
+
+    // animation start
+    Future.delayed(const Duration(milliseconds: 200), () {
+      setState(() {
+        opacity = 1.0;
+        scale = 1.0;
+      });
+    });
+
     _loadApp();
   }
 
@@ -21,14 +35,16 @@ class _SplashScreenState extends State<SplashScreen> {
     String longitude = '--';
 
     try {
-      // Permission
+      setState(() => statusText = "Checking permissions...");
+
       LocationPermission permission = await Geolocator.checkPermission();
 
       if (permission == LocationPermission.denied) {
         permission = await Geolocator.requestPermission();
       }
 
-      // Get location
+      setState(() => statusText = "Getting location...");
+
       if (permission != LocationPermission.denied &&
           permission != LocationPermission.deniedForever) {
         bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
@@ -42,12 +58,14 @@ class _SplashScreenState extends State<SplashScreen> {
           longitude = pos.longitude.toStringAsFixed(6);
         }
       }
+
+      setState(() => statusText = "Preparing camera...");
     } catch (e) {
       print("Splash location error: $e");
     }
 
-    // ⏳ Delay (increase slightly if you want)
-    await Future.delayed(const Duration(seconds: 4));
+    // small delay for smooth transition
+    await Future.delayed(const Duration(seconds: 2));
 
     if (!mounted) return;
 
@@ -67,24 +85,61 @@ class _SplashScreenState extends State<SplashScreen> {
     return Scaffold(
       body: Stack(
         children: [
-          // MAP BACKGROUND
+          // BACKGROUND IMAGE
           Positioned.fill(
-            child: Image.asset("assets/map_bg.png", fit: BoxFit.cover),
+            child: Image.asset("assets/map_darkbg.png", fit: BoxFit.cover),
           ),
 
-          // DARK OVERLAY (image ko readable banane ke liye)
-          Container(color: Colors.black.withOpacity(0.25)),
+          // DARK OVERLAY (important)
+          Container(color: Colors.black.withOpacity(0.2)),
 
-          // CENTER LOGO
-          Center(child: Image.asset("assets/logo_wbg.png", width: 220)),
+          // CENTER CONTENT
+          Center(
+            child: AnimatedOpacity(
+              duration: const Duration(milliseconds: 800),
+              opacity: opacity,
+              child: AnimatedScale(
+                duration: const Duration(milliseconds: 800),
+                scale: scale,
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    // LOGO
+                    Image.asset("assets/logo_white.png", width: 200),
 
-          // LOADER
-          const Positioned(
-            bottom: 40,
-            left: 0,
-            right: 0,
-            child: Center(
-              child: CircularProgressIndicator(color: Color(0xFFDEB841)),
+                    const SizedBox(height: 16),
+
+                    // TAGLINE
+                    const SizedBox(height: 6),
+                    const Text(
+                      "Geo-Authenticated Photos",
+                      style: TextStyle(
+                        color: Colors.white70,
+                        fontSize: 13,
+                        letterSpacing: 0.5,
+                      ),
+                    ),
+                    const SizedBox(height: 30),
+
+                    // STATUS TEXT
+                    Text(
+                      statusText,
+                      style: const TextStyle(
+                        color: Colors.white54,
+                        fontSize: 13,
+                      ),
+                    ),
+
+                    const SizedBox(height: 10),
+
+                    // LOADER
+                    const CircularProgressIndicator(
+                      color: Color(0xFFDEB841),
+                      strokeWidth: 2,
+                    ),
+                  ],
+                ),
+              ),
             ),
           ),
         ],

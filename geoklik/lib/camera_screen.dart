@@ -1,4 +1,5 @@
 import 'map_screen.dart';
+import 'settings_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
 import 'package:geolocator/geolocator.dart';
@@ -6,9 +7,12 @@ import 'package:geocoding/geocoding.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:gal/gal.dart';
 import 'package:crypto/crypto.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:io';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
+import 'app_gallery_screen.dart';
+import 'package:path_provider/path_provider.dart';
 
 class CameraScreen extends StatefulWidget {
   final String initialLatitude;
@@ -30,6 +34,7 @@ class _CameraScreenState extends State<CameraScreen> {
   bool cameraReady = false;
   bool flashOn = false;
   double zoomLevel = 1.0;
+  bool showControls = false;
 
   String lat = '--';
   String lon = '--';
@@ -38,113 +43,109 @@ class _CameraScreenState extends State<CameraScreen> {
   String currentDate = '';
 
   File? lastPhoto;
+  File? lastOriginalPhoto;
   String? lastHash;
   String? lastLocation;
   String? lastTimestamp;
+
+  //  draggable stamp position (FULL WIDTH BAR)
+  double stampX = 12;
+  double stampY = 400;
+
+  // SETTINGS
+  bool stampEnabled = true;
+  bool showLocation = true;
+  bool showTimestamp = true;
+  double fontSize = 14;
+  double opacity = 0.6;
 
   @override
   void initState() {
     super.initState();
     lat = widget.initialLatitude;
     lon = widget.initialLongitude;
+
     setupCamera();
     getLocation();
     startClock();
+    loadSettings();
+  }
+
+  // LOAD SETTINGS
+  void loadSettings() async {
+    final prefs = await SharedPreferences.getInstance();
+
+    setState(() {
+      stampEnabled = prefs.getBool('stamp') ?? true;
+      showLocation = prefs.getBool('location') ?? true;
+      showTimestamp = prefs.getBool('timestamp') ?? true;
+      fontSize = prefs.getDouble('font') ?? 14;
+      opacity = prefs.getDouble('opacity') ?? 0.6;
+    });
   }
 
   Future<void> setupCamera({CameraDescription? cam}) async {
     await Permission.camera.request();
     cameras = await availableCameras();
     final desc = cam ?? cameras!.first;
+
     controller = CameraController(
       desc,
       ResolutionPreset.high,
       enableAudio: false,
     );
+
     await controller!.initialize();
     if (!mounted) return;
     setState(() => cameraReady = true);
   }
 
   Future<void> flipCamera() async {
-    if (cameras == null) return;
     final curr = controller!.description;
     final next = cameras!.firstWhere(
       (c) => c.lensDirection != curr.lensDirection,
     );
+
     await controller?.dispose();
     setState(() => cameraReady = false);
     await setupCamera(cam: next);
   }
 
   Future<void> toggleFlash() async {
-    if (controller == null) return;
     setState(() => flashOn = !flashOn);
     await controller!.setFlashMode(flashOn ? FlashMode.torch : FlashMode.off);
   }
 
   Future<void> getLocation() async {
-    LocationPermission perm = await Geolocator.checkPermission();
-    if (perm == LocationPermission.denied) {
-      perm = await Geolocator.requestPermission();
-    }
-    if (perm == LocationPermission.deniedForever) {
-      setState(() {
-        lat = 'Permission denied';
-        lon = '';
-      });
-      await Geolocator.openAppSettings();
-      return;
-    }
+    final pos = await Geolocator.getCurrentPosition(
+      desiredAccuracy: LocationAccuracy.high,
+    );
 
-    bool gpsOn = await Geolocator.isLocationServiceEnabled();
-    if (!gpsOn) {
-      setState(() {
-        lat = 'GPS is OFF';
-        lon = 'Turn ON GPS';
-      });
-      await Geolocator.openLocationSettings();
-      return;
-    }
+    setState(() {
+      lat = pos.latitude.toStringAsFixed(6);
+      lon = pos.longitude.toStringAsFixed(6);
+    });
 
-    try {
-      final pos = await Geolocator.getCurrentPosition(
-        desiredAccuracy: LocationAccuracy.high,
-      );
-      setState(() {
-        lat = pos.latitude.toStringAsFixed(6);
-        lon = pos.longitude.toStringAsFixed(6);
-      });
-      // get address from lat lon
-      getAddress(pos.latitude, pos.longitude);
-    } catch (e) {
-      print("location error $e");
-    }
-  }
+    final placemarks = await placemarkFromCoordinates(
+      pos.latitude,
+      pos.longitude,
+    );
 
-  Future<void> getAddress(double latitude, double longitude) async {
-    try {
-      List<Placemark> placemarks = await placemarkFromCoordinates(
-        latitude,
-        longitude,
-      );
-      if (placemarks.isNotEmpty) {
-        Placemark place = placemarks[0];
-        String addr = '';
-        if (place.subLocality != null && place.subLocality!.isNotEmpty) {
-          addr += place.subLocality! + ', ';
-        }
-        if (place.locality != null && place.locality!.isNotEmpty) {
-          addr += place.locality! + ', ';
-        }
-        if (place.administrativeArea != null &&
-            place.administrativeArea!.isNotEmpty) {
-          addr += place.administrativeArea!;
-        }
-        setState(() => address = addr.trim());
+    if (placemarks.isNotEmpty) {
+      final p = placemarks[0];
+
+      String addr = '';
+      if (p.subLocality != null && p.subLocality!.isNotEmpty) {
+        addr += '${p.subLocality!}, ';
       }
-    } catch (e) {
-      print("address error $e");
+      if (p.locality != null && p.locality!.isNotEmpty) {
+        addr += '${p.locality!}, ';
+      }
+      if (p.administrativeArea != null && p.administrativeArea!.isNotEmpty) {
+        addr += p.administrativeArea!;
+      }
+
+      setState(() => address = addr.trim());
     }
   }
 
@@ -152,12 +153,13 @@ class _CameraScreenState extends State<CameraScreen> {
     Future.doWhile(() async {
       await Future.delayed(const Duration(seconds: 1));
       if (!mounted) return false;
+
       final now = DateTime.now();
       setState(() {
-        currentTime =
-            '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}:${now.second.toString().padLeft(2, '0')}';
+        currentTime = '${now.hour}:${now.minute}:${now.second}';
         currentDate = '${now.day}/${now.month}/${now.year}';
       });
+
       return true;
     });
   }
@@ -165,100 +167,39 @@ class _CameraScreenState extends State<CameraScreen> {
   String makeHash(Uint8List bytes) => sha256.convert(bytes).toString();
 
   Future<void> takePhoto() async {
-    if (controller == null || !cameraReady) return;
+    final file = await controller!.takePicture();
+    final rawBytes = await file.readAsBytes();
+    final hash = makeHash(rawBytes);
+    // SAVE ORIGINAL (WITHOUT STAMP) INTERNALLY
+    final appDir = await getApplicationDocumentsDirectory();
+    final originalPath =
+        '${appDir.path}/original_${DateTime.now().millisecondsSinceEpoch}.jpg';
 
-    final XFile file = await controller!.takePicture();
-    final Uint8List rawBytes = await file.readAsBytes();
-    final String hash = makeHash(rawBytes);
-
-    // show export dialog — with stamp or without
-    bool? withStamp = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF031926),
-        title: const Text(
-          'Save Photo',
-          style: TextStyle(color: Colors.white, fontSize: 16),
-        ),
-        content: const Text(
-          'How do you want to save this photo?',
-          style: TextStyle(color: Colors.white70, fontSize: 13),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text(
-              'Without Stamp',
-              style: TextStyle(color: Colors.grey),
-            ),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text(
-              'With Stamp',
-              style: TextStyle(color: Color(0xFFDEB841)),
-            ),
-          ),
-        ],
-      ),
-    );
-
-    if (withStamp == null) return; // user dismissed
+    final originalFile = File(originalPath);
+    await originalFile.writeAsBytes(rawBytes);
 
     await Gal.requestAccess();
 
-    if (withStamp) {
-      // stamp and save
-      String stampAddr = address.isNotEmpty ? address : 'Lat: $lat  Lon: $lon';
-      final Uint8List stamped = await addStamp(
-        rawBytes,
-        stampAddr,
-        '$currentDate  $currentTime',
-        hash.substring(0, 16),
-      );
-      await Gal.putImageBytes(stamped);
+    final stamped = await addStamp(
+      rawBytes,
+      address.isNotEmpty ? address : 'Lat: $lat Lon: $lon',
+      '$currentDate  $currentTime',
+      hash.substring(0, 16),
+    );
 
-      // save temp file for preview
-      final tempPath = file.path.replaceAll('.jpg', '_stamped.jpg');
-      final tempFile = File(tempPath);
-      await tempFile.writeAsBytes(stamped);
-      if (!mounted) return;
-      setState(() {
-        lastPhoto = tempFile;
-      });
-    } else {
-      // save original without stamp
-      await Gal.putImageBytes(rawBytes);
-      if (!mounted) return;
-      setState(() {
-        lastPhoto = File(file.path);
-      });
-    }
+    await Gal.putImageBytes(stamped);
 
+    final tempFile = File(file.path.replaceAll('.jpg', '_stamped.jpg'));
+    await tempFile.writeAsBytes(stamped);
+
+    if (!mounted) return;
     setState(() {
+      lastPhoto = tempFile;
       lastHash = hash;
+      lastOriginalPhoto = originalFile;
       lastLocation = address.isNotEmpty ? address : 'Lat: $lat, Lon: $lon';
       lastTimestamp = '$currentDate  $currentTime';
     });
-
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Row(
-          children: [
-            const Icon(Icons.check_circle, color: Colors.white, size: 18),
-            const SizedBox(width: 8),
-            Text(
-              withStamp
-                  ? 'Photo saved with stamp!'
-                  : 'Photo saved without stamp!',
-            ),
-          ],
-        ),
-        backgroundColor: const Color(0xFF1B7A4A),
-        duration: const Duration(seconds: 2),
-      ),
-    );
   }
 
   Future<Uint8List> addStamp(
@@ -278,12 +219,11 @@ class _CameraScreenState extends State<CameraScreen> {
     final w = img.width.toDouble();
     final h = img.height.toDouble();
 
-    // dark bg at bottom
     canvas.drawRect(
       Rect.fromLTWH(0, h - 130, w, 130),
-      Paint()..color = const Color(0xCC000000),
+      Paint()..color = Colors.black.withValues(alpha: opacity),
     );
-    // yellow bar on left
+
     canvas.drawRect(
       Rect.fromLTWH(0, h - 130, 6, 130),
       Paint()..color = const Color(0xFFDEB841),
@@ -311,52 +251,27 @@ class _CameraScreenState extends State<CameraScreen> {
       tp.paint(canvas, Offset(x, y));
     }
 
-    putText('GeoKlik', 20, h - 125, 26, col: const Color(0xFFDEB841));
-    putText(line1, 20, h - 94, 18); // address or lat lon
-    putText(line2, 20, h - 68, 16, col: const Color(0xFFCCCCCC));
-    putText('SHA: $hashShort...', 20, h - 44, 14, col: const Color(0xFF999999));
+    putText('GeoKlik', 20, h - 125, fontSize + 6, col: const Color(0xFFDEB841));
+
+    if (showLocation) putText(line1, 20, h - 94, fontSize + 2);
+
+    if (showTimestamp) putText(line2, 20, h - 68, fontSize);
+
+    putText('SHA: $hashShort...', 20, h - 44, fontSize);
 
     final pic = recorder.endRecording();
     final finalImg = await pic.toImage(img.width, img.height);
     final data = await finalImg.toByteData(format: ui.ImageByteFormat.png);
+
     return data!.buffer.asUint8List();
   }
 
-  void openVerification() {
-    if (lastPhoto == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('No photo yet!'),
-          backgroundColor: Colors.red,
-        ),
-      );
-      return;
-    }
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (_) => VerificationScreen(
-          image: lastPhoto!,
-          hash: lastHash ?? '--',
-          location: lastLocation ?? '--',
-          timestamp: lastTimestamp ?? '--',
-        ),
-      ),
-    );
-  }
-
   void openMap() {
-    final double? lt = double.tryParse(lat);
-    final double? lg = double.tryParse(lon);
-    if (lt == null || lg == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('GPS coordinates not ready!'),
-          backgroundColor: Colors.red,
-        ),
-      );
-      return;
-    }
+    final lt = double.tryParse(lat);
+    final lg = double.tryParse(lon);
+
+    if (lt == null || lg == null) return;
+
     Navigator.push(
       context,
       MaterialPageRoute(
@@ -364,177 +279,146 @@ class _CameraScreenState extends State<CameraScreen> {
           latitude: lt,
           longitude: lg,
           timestamp: '$currentDate  $currentTime',
-          hash: lastHash ?? 'No photo yet',
+          hash: lastHash ?? '--',
         ),
       ),
     );
   }
 
   @override
-  void dispose() {
-    controller?.dispose();
-    super.dispose();
-  }
-
-  @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.black,
+
       appBar: AppBar(
         backgroundColor: const Color(0xFF031926),
-        elevation: 0,
         title: Image.asset('assets/logo_white.png', height: 25),
         actions: [
           IconButton(
-            onPressed: openMap,
-            icon: const Icon(Icons.map, color: Color(0xFFDEB841)),
+            icon: const Icon(Icons.settings, color: Colors.white),
+            onPressed: () async {
+              await Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const SettingsScreen()),
+              );
+              loadSettings();
+            },
           ),
         ],
       ),
+
       body: Stack(
         children: [
           if (cameraReady && controller != null)
-            Positioned.fill(child: CameraPreview(controller!))
-          else
-            const Center(
-              child: CircularProgressIndicator(color: Color(0xFFDEB841)),
-            ),
+            Positioned.fill(child: CameraPreview(controller!)),
 
-          // gps + address overlay
-          Positioned(
-            bottom: 160,
-            left: 12,
-            right: 12,
-            child: Container(
-              padding: const EdgeInsets.all(10),
-              decoration: BoxDecoration(
-                color: Colors.black.withOpacity(0.6),
-                borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: const Color(0xFFDEB841)),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      const Icon(
-                        Icons.location_on,
-                        color: Color(0xFFDEB841),
-                        size: 14,
-                      ),
-                      const SizedBox(width: 4),
-                      Expanded(
-                        child: Text(
-                          address.isNotEmpty ? address : 'Lat: $lat  Lon: $lon',
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 12,
-                          ),
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      ),
-                    ],
-                  ),
-                  if (address.isNotEmpty) ...[
-                    const SizedBox(height: 2),
-                    Text(
-                      '$lat, $lon',
-                      style: const TextStyle(
-                        color: Colors.white54,
-                        fontSize: 10,
-                      ),
-                    ),
-                  ],
-                  const SizedBox(height: 4),
-                  Row(
-                    children: [
-                      const Icon(
-                        Icons.access_time,
-                        color: Colors.white54,
-                        size: 14,
-                      ),
-                      const SizedBox(width: 4),
-                      Text(
-                        '$currentDate  $currentTime',
-                        style: const TextStyle(
-                          color: Colors.white70,
-                          fontSize: 11,
-                        ),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-            ),
-          ),
-
-          // flash zoom flip
-          Positioned(
-            bottom: 110,
-            left: 0,
-            right: 0,
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                IconButton(
-                  onPressed: toggleFlash,
-                  icon: Icon(
-                    flashOn ? Icons.flash_on : Icons.flash_off,
-                    color: flashOn ? const Color(0xFFDEB841) : Colors.white,
-                  ),
-                ),
-                const SizedBox(width: 20),
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 12,
-                    vertical: 6,
-                  ),
+          /// DRAGGABLE FULL WIDTH STAMP (SAME UI)
+          if (stampEnabled)
+            Positioned(
+              left: stampX,
+              top: stampY,
+              child: GestureDetector(
+                onPanUpdate: (d) {
+                  setState(() {
+                    stampX += d.delta.dx;
+                    stampY += d.delta.dy;
+                  });
+                },
+                child: Container(
+                  width: MediaQuery.of(context).size.width - 24,
+                  padding: const EdgeInsets.all(10),
                   decoration: BoxDecoration(
-                    color: Colors.black54,
-                    borderRadius: BorderRadius.circular(20),
+                    color: Colors.black.withValues(alpha: opacity),
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: const Color(0xFFDEB841)),
                   ),
-                  child: Row(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      GestureDetector(
-                        onTap: () async {
-                          await controller!.setZoomLevel(1.0);
-                          setState(() => zoomLevel = 1.0);
-                        },
-                        child: Text(
-                          '1x',
+                      Row(
+                        children: [
+                          const Icon(
+                            Icons.location_on,
+                            color: Color(0xFFDEB841),
+                            size: 14,
+                          ),
+                          const SizedBox(width: 4),
+                          Expanded(
+                            child: Text(
+                              address.isNotEmpty
+                                  ? address
+                                  : 'Lat: $lat  Lon: $lon',
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontSize: fontSize,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                      if (showLocation)
+                        Text(
+                          '$lat, $lon',
                           style: TextStyle(
-                            color: zoomLevel == 1.0
-                                ? const Color(0xFFDEB841)
-                                : Colors.white,
-                            fontWeight: FontWeight.bold,
+                            color: Colors.white54,
+                            fontSize: fontSize - 2,
                           ),
                         ),
-                      ),
-                      const SizedBox(width: 10),
-                      GestureDetector(
-                        onTap: () async {
-                          await controller!.setZoomLevel(2.0);
-                          setState(() => zoomLevel = 2.0);
-                        },
-                        child: Text(
-                          '2x',
+                      const SizedBox(height: 4),
+                      if (showTimestamp)
+                        Text(
+                          '$currentDate  $currentTime',
                           style: TextStyle(
-                            color: zoomLevel == 2.0
-                                ? const Color(0xFFDEB841)
-                                : Colors.white,
-                            fontWeight: FontWeight.bold,
+                            color: Colors.white70,
+                            fontSize: fontSize - 2,
                           ),
                         ),
-                      ),
                     ],
                   ),
                 ),
-                const SizedBox(width: 20),
-                IconButton(
-                  onPressed: flipCamera,
-                  icon: const Icon(
-                    Icons.flip_camera_android,
-                    color: Colors.white,
+              ),
+            ),
+
+          ///  YEH TU ADD KAREGI (FLOATING CONTROLS)
+          Positioned(
+            bottom: 120,
+            right: 20,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                if (showControls) ...[
+                  _controlButton(
+                    flashOn ? Icons.flash_on : Icons.flash_off,
+                    toggleFlash,
+                  ),
+                  const SizedBox(height: 10),
+
+                  _controlButton(Icons.flip_camera_android, flipCamera),
+                  const SizedBox(height: 10),
+
+                  _controlButton(Icons.zoom_in, () async {
+                    double newZoom = zoomLevel == 1.0 ? 2.0 : 1.0;
+                    await controller!.setZoomLevel(newZoom);
+                    setState(() => zoomLevel = newZoom);
+                  }),
+                  const SizedBox(height: 10),
+                ],
+
+                GestureDetector(
+                  onTap: () {
+                    setState(() {
+                      showControls = !showControls;
+                    });
+                  },
+                  child: Container(
+                    width: 55,
+                    height: 55,
+                    decoration: BoxDecoration(
+                      color: Color(0xFF031926),
+                      shape: BoxShape.circle,
+                      border: Border.all(color: Color(0xFFDEB841), width: 2),
+                    ),
+                    child: const Icon(Icons.tune, color: Colors.white),
                   ),
                 ),
               ],
@@ -549,11 +433,19 @@ class _CameraScreenState extends State<CameraScreen> {
         padding: const EdgeInsets.only(bottom: 30),
         child: Row(
           mainAxisAlignment: MainAxisAlignment.spaceAround,
-          crossAxisAlignment: CrossAxisAlignment.center,
           children: [
-            // last photo thumbnail
             GestureDetector(
-              onTap: openVerification,
+              onTap: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => AppGalleryScreen(
+                      imageFile: lastPhoto,
+                      originalFile: lastOriginalPhoto,
+                    ),
+                  ),
+                );
+              },
               child: Container(
                 width: 44,
                 height: 44,
@@ -563,217 +455,43 @@ class _CameraScreenState extends State<CameraScreen> {
                   border: Border.all(color: Colors.white24),
                 ),
                 child: lastPhoto != null
-                    ? ClipRRect(
-                        borderRadius: BorderRadius.circular(7),
-                        child: Image.file(lastPhoto!, fit: BoxFit.cover),
-                      )
-                    : const Icon(Icons.photo, color: Colors.white54, size: 22),
+                    ? Image.file(lastPhoto!, fit: BoxFit.cover)
+                    : const Icon(Icons.photo, color: Colors.white54),
               ),
             ),
-
-            GestureDetector(
-              onTap: openVerification,
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: const [
-                  Icon(Icons.verified_user, color: Colors.white54, size: 22),
-                  SizedBox(height: 2),
-                  Text(
-                    'Verify',
-                    style: TextStyle(color: Colors.white54, fontSize: 10),
-                  ),
-                ],
-              ),
-            ),
-
-            // shutter button
+            const Icon(Icons.verified, color: Colors.white54),
             GestureDetector(
               onTap: takePhoto,
-              child: Container(
-                width: 64,
-                height: 64,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  border: Border.all(color: const Color(0xFFDEB841), width: 3),
-                ),
-                child: Center(
-                  child: Container(
-                    width: 50,
-                    height: 50,
-                    decoration: const BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: Colors.white,
-                    ),
-                  ),
-                ),
-              ),
+              child: const Icon(Icons.camera, color: Colors.white),
             ),
-
             GestureDetector(
               onTap: openMap,
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: const [
-                  Icon(Icons.map, color: Colors.white54, size: 22),
-                  SizedBox(height: 2),
-                  Text(
-                    'Map',
-                    style: TextStyle(color: Colors.white54, fontSize: 10),
-                  ),
-                ],
-              ),
+              child: const Icon(Icons.map, color: Colors.white54),
             ),
-
             GestureDetector(
               onTap: () async {
                 await Gal.open();
               },
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: const [
-                  Icon(Icons.photo_library, color: Colors.white54, size: 22),
-                  SizedBox(height: 2),
-                  Text(
-                    'Gallery',
-                    style: TextStyle(color: Colors.white54, fontSize: 10),
-                  ),
-                ],
-              ),
+              child: const Icon(Icons.photo_library, color: Colors.white54),
             ),
           ],
         ),
       ),
     );
   }
-}
 
-class VerificationScreen extends StatelessWidget {
-  final File image;
-  final String hash;
-  final String location;
-  final String timestamp;
-
-  const VerificationScreen({
-    super.key,
-    required this.image,
-    required this.hash,
-    required this.location,
-    required this.timestamp,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: const Color(0xFF031926),
-      appBar: AppBar(
-        backgroundColor: const Color(0xFF031926),
-        title: const Text(
-          'Verification',
-          style: TextStyle(color: Colors.white),
+  Widget _controlButton(IconData icon, VoidCallback onTap) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        width: 45,
+        height: 45,
+        decoration: BoxDecoration(
+          color: Colors.black.withOpacity(0.7),
+          shape: BoxShape.circle,
+          border: Border.all(color: Color(0xFFDEB841)),
         ),
-        iconTheme: const IconThemeData(color: Colors.white),
-      ),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            ClipRRect(
-              borderRadius: BorderRadius.circular(12),
-              child: Image.file(
-                image,
-                width: double.infinity,
-                fit: BoxFit.cover,
-              ),
-            ),
-            const SizedBox(height: 20),
-
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: const Color(0xFF1B7A4A).withOpacity(0.2),
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: const Color(0xFF1B7A4A)),
-              ),
-              child: Row(
-                children: const [
-                  Icon(Icons.check_circle, color: Color(0xFF1B7A4A), size: 28),
-                  SizedBox(width: 12),
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        'Image Authenticated',
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontWeight: FontWeight.bold,
-                          fontSize: 16,
-                        ),
-                      ),
-                      Text(
-                        'Not tampered',
-                        style: TextStyle(
-                          color: Color(0xFF1B7A4A),
-                          fontSize: 13,
-                        ),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 16),
-
-            infoTile(Icons.location_on, 'Location', location),
-            infoTile(Icons.access_time, 'Timestamp', timestamp),
-            infoTile(Icons.lock, 'SHA-256 Hash', hash, mono: true),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget infoTile(
-    IconData icon,
-    String label,
-    String value, {
-    bool mono = false,
-  }) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 12),
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.05),
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: Colors.white12),
-      ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Icon(icon, color: const Color(0xFFDEB841), size: 20),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  label,
-                  style: const TextStyle(color: Colors.white54, fontSize: 11),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  value,
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 13,
-                    fontFamily: mono ? 'monospace' : null,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ],
+        child: Icon(icon, color: Colors.white, size: 20),
       ),
     );
   }
