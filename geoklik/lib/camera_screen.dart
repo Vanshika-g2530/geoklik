@@ -58,6 +58,8 @@ class _CameraScreenState extends State<CameraScreen> {
   bool showTimestamp = true;
   double fontSize = 14;
   double opacity = 0.6;
+  // shutter feedback overlay
+  bool showShutterFlash = false;
 
   @override
   void initState() {
@@ -113,7 +115,8 @@ class _CameraScreenState extends State<CameraScreen> {
 
   Future<void> toggleFlash() async {
     setState(() => flashOn = !flashOn);
-    await controller!.setFlashMode(flashOn ? FlashMode.torch : FlashMode.off);
+    // Use auto flash for capture behavior instead of continuous torch
+    await controller!.setFlashMode(flashOn ? FlashMode.auto : FlashMode.off);
   }
 
   Future<void> getLocation() async {
@@ -167,6 +170,8 @@ class _CameraScreenState extends State<CameraScreen> {
   String makeHash(Uint8List bytes) => sha256.convert(bytes).toString();
 
   Future<void> takePhoto() async {
+    // Ensure camera flash mode matches UI before capturing
+    await controller!.setFlashMode(flashOn ? FlashMode.auto : FlashMode.off);
     final file = await controller!.takePicture();
     final rawBytes = await file.readAsBytes();
     final hash = makeHash(rawBytes);
@@ -202,6 +207,21 @@ class _CameraScreenState extends State<CameraScreen> {
     });
   }
 
+  void _onShutterTap() {
+    // show a quick white flash to give capture feedback
+    if (!mounted) return;
+    setState(() => showShutterFlash = true);
+
+    // hide flash shortly after
+    Future.delayed(const Duration(milliseconds: 180), () {
+      if (!mounted) return;
+      setState(() => showShutterFlash = false);
+    });
+
+    // perform capture (don't await here so UI feedback shows immediately)
+    takePhoto();
+  }
+
   Future<Uint8List> addStamp(
     Uint8List imgBytes,
     String line1,
@@ -219,13 +239,32 @@ class _CameraScreenState extends State<CameraScreen> {
     final w = img.width.toDouble();
     final h = img.height.toDouble();
 
+    // Map the draggable UI stamp position (screen coords) to image coords
+    final sw = MediaQuery.of(context).size.width;
+    final sh = MediaQuery.of(context).size.height;
+
+    final scaleX = w / sw;
+    final scaleY = h / sh;
+
+    // UI used a fixed stamp height of ~130 logical pixels and horizontal padding 12
+    final uiStampHeight = 130.0;
+    final uiStampPadding = 12.0;
+    final uiLeftBar = 6.0;
+    final uiStampWidth =
+        (sw - 24); // same as in build: width = screenWidth - 24
+
+    final imgStampX = (stampX).clamp(0.0, sw) * scaleX;
+    final imgStampY = (stampY).clamp(0.0, sh) * scaleY;
+    final imgStampW = uiStampWidth * scaleX;
+    final imgStampH = uiStampHeight * scaleY;
+
     canvas.drawRect(
-      Rect.fromLTWH(0, h - 130, w, 130),
+      Rect.fromLTWH(imgStampX, imgStampY, imgStampW, imgStampH),
       Paint()..color = Colors.black.withValues(alpha: opacity),
     );
 
     canvas.drawRect(
-      Rect.fromLTWH(0, h - 130, 6, 130),
+      Rect.fromLTWH(imgStampX, imgStampY, uiLeftBar * scaleX, imgStampH),
       Paint()..color = const Color(0xFFDEB841),
     );
 
@@ -235,6 +274,7 @@ class _CameraScreenState extends State<CameraScreen> {
       double y,
       double size, {
       Color col = Colors.white,
+      double maxW = 0,
     }) {
       final tp = TextPainter(
         text: TextSpan(
@@ -247,17 +287,54 @@ class _CameraScreenState extends State<CameraScreen> {
         ),
         textDirection: TextDirection.ltr,
       );
-      tp.layout(maxWidth: w - 40);
+      tp.layout(maxWidth: maxW > 0 ? maxW : w - 40);
       tp.paint(canvas, Offset(x, y));
     }
 
-    putText('GeoKlik', 20, h - 125, fontSize + 6, col: const Color(0xFFDEB841));
+    // Text positions inside the stamp (use small inner padding)
+    final innerPadX = imgStampX + (uiStampPadding * scaleX);
+    double yCursor = imgStampY + (10 * scaleY);
+    final textMaxWidth = imgStampW - (uiStampPadding * 2 * scaleX);
 
-    if (showLocation) putText(line1, 20, h - 94, fontSize + 2);
+    putText(
+      'GeoKlik',
+      innerPadX,
+      yCursor,
+      (fontSize + 6) * scaleX,
+      col: const Color(0xFFDEB841),
+      maxW: textMaxWidth,
+    );
+    yCursor += ((fontSize + 6) * scaleX) + (6 * scaleY);
 
-    if (showTimestamp) putText(line2, 20, h - 68, fontSize);
+    if (showLocation) {
+      putText(
+        line1,
+        innerPadX,
+        yCursor,
+        (fontSize + 2) * scaleX,
+        maxW: textMaxWidth,
+      );
+      yCursor += ((fontSize + 2) * scaleX) + (4 * scaleY);
+    }
 
-    putText('SHA: $hashShort...', 20, h - 44, fontSize);
+    if (showTimestamp) {
+      putText(
+        line2,
+        innerPadX,
+        yCursor,
+        (fontSize) * scaleX,
+        maxW: textMaxWidth,
+      );
+      yCursor += ((fontSize) * scaleX) + (6 * scaleY);
+    }
+
+    putText(
+      'SHA: $hashShort...',
+      innerPadX,
+      yCursor,
+      (fontSize) * scaleX,
+      maxW: textMaxWidth,
+    );
 
     final pic = recorder.endRecording();
     final finalImg = await pic.toImage(img.width, img.height);
@@ -311,6 +388,18 @@ class _CameraScreenState extends State<CameraScreen> {
         children: [
           if (cameraReady && controller != null)
             Positioned.fill(child: CameraPreview(controller!)),
+
+          // shutter flash overlay
+          Positioned.fill(
+            child: IgnorePointer(
+              ignoring: true,
+              child: AnimatedOpacity(
+                opacity: showShutterFlash ? 0.9 : 0.0,
+                duration: const Duration(milliseconds: 120),
+                child: Container(color: Colors.white),
+              ),
+            ),
+          ),
 
           /// DRAGGABLE FULL WIDTH STAMP (SAME UI)
           if (stampEnabled)
@@ -461,7 +550,7 @@ class _CameraScreenState extends State<CameraScreen> {
             ),
             const Icon(Icons.verified, color: Colors.white54),
             GestureDetector(
-              onTap: takePhoto,
+              onTap: _onShutterTap,
               child: const Icon(Icons.camera, color: Colors.white),
             ),
             GestureDetector(
