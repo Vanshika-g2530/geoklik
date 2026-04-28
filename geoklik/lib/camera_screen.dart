@@ -1,3 +1,4 @@
+import 'package:http/http.dart' as http;
 import 'map_screen.dart';
 import 'settings_screen.dart';
 import 'package:flutter/material.dart';
@@ -182,6 +183,26 @@ class _CameraScreenState extends State<CameraScreen> {
 
     final originalFile = File(originalPath);
     await originalFile.writeAsBytes(rawBytes);
+    var request = http.MultipartRequest(
+      'POST',
+      Uri.parse('http://10.7.17.27:3000/upload-proof'),
+    );
+
+    request.fields['latitude'] = lat;
+    request.fields['longitude'] = lon;
+    request.fields['timestamp'] = '$currentDate $currentTime';
+
+    request.files.add(
+      await http.MultipartFile.fromPath('image', originalFile.path),
+    );
+
+    var response = await request.send();
+
+    if (response.statusCode == 200) {
+      print("Uploaded to backend successfully");
+    } else {
+      print("Upload failed");
+    }
 
     await Gal.requestAccess();
 

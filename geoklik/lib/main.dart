@@ -1,3 +1,6 @@
+import 'package:image_picker/image_picker.dart';
+import 'package:http/http.dart' as http;
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'splash_screen.dart';
 import 'camera_screen.dart';
@@ -23,8 +26,49 @@ class MyApp extends StatelessWidget {
   }
 }
 
-class HomeScreen extends StatelessWidget {
+class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
+
+  @override
+  State<HomeScreen> createState() => _HomeScreenState();
+}
+
+class _HomeScreenState extends State<HomeScreen> {
+  Future<void> verifyImage() async {
+    final picker = ImagePicker();
+
+    final pickedFile = await picker.pickImage(source: ImageSource.gallery);
+
+    if (pickedFile == null) return;
+
+    var request = http.MultipartRequest(
+      'POST',
+      Uri.parse('http://10.7.17.27:3000/verify-proof'),
+    );
+
+    request.files.add(
+      await http.MultipartFile.fromPath('image', pickedFile.path),
+    );
+
+    var response = await request.send();
+    var responseData = await response.stream.bytesToString();
+
+    final data = jsonDecode(responseData);
+
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text("Verification Result"),
+        content: Text(data["message"]),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text("OK"),
+          ),
+        ],
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -115,7 +159,7 @@ class HomeScreen extends StatelessWidget {
                   ),
                 ),
 
-                onPressed: () {},
+                onPressed: verifyImage,
 
                 icon: const Icon(Icons.verified_user),
 
