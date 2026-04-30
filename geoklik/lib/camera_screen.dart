@@ -1,4 +1,7 @@
 import 'package:http/http.dart' as http;
+import 'package:image_picker/image_picker.dart';
+import 'package:file_picker/file_picker.dart';
+import 'dart:convert';
 import 'map_screen.dart';
 import 'settings_screen.dart';
 import 'package:flutter/material.dart';
@@ -14,6 +17,7 @@ import 'dart:typed_data';
 import 'dart:ui' as ui;
 import 'app_gallery_screen.dart';
 import 'package:path_provider/path_provider.dart';
+import 'api_constants.dart';
 
 class CameraScreen extends StatefulWidget {
   final String initialLatitude;
@@ -61,6 +65,8 @@ class _CameraScreenState extends State<CameraScreen> {
   double opacity = 0.6;
   // shutter feedback overlay
   bool showShutterFlash = false;
+  // prevent double-tap race condition
+  bool _isCapturing = false;
 
   @override
   void initState() {
@@ -171,61 +177,161 @@ class _CameraScreenState extends State<CameraScreen> {
   String makeHash(Uint8List bytes) => sha256.convert(bytes).toString();
 
   Future<void> takePhoto() async {
-    // Ensure camera flash mode matches UI before capturing
-    await controller!.setFlashMode(flashOn ? FlashMode.auto : FlashMode.off);
-    final file = await controller!.takePicture();
-    final rawBytes = await file.readAsBytes();
-    final hash = makeHash(rawBytes);
-    // SAVE ORIGINAL (WITHOUT STAMP) INTERNALLY
-    final appDir = await getApplicationDocumentsDirectory();
-    final originalPath =
-        '${appDir.path}/original_${DateTime.now().millisecondsSinceEpoch}.jpg';
+    // Guard against double-tap
+    if (_isCapturing) return;
+    setState(() => _isCapturing = true);
 
-    final originalFile = File(originalPath);
-    await originalFile.writeAsBytes(rawBytes);
-    var request = http.MultipartRequest(
-      'POST',
-      Uri.parse('http://10.7.17.27:3000/upload-proof'),
-    );
+    try {
+      // ── STEP 1: Take the picture ──────────────────────────────────────────
+      await controller!.setFlashMode(flashOn ? FlashMode.auto : FlashMode.off);
+      final file = await controller!.takePicture();
+      final rawBytes = await file.readAsBytes();
+      final hash = makeHash(rawBytes);
 
-    request.fields['latitude'] = lat;
-    request.fields['longitude'] = lon;
-    request.fields['timestamp'] = '$currentDate $currentTime';
+      // ── STEP 2: Save original (no stamp) to app documents ────────────────
+      final appDir = await getApplicationDocumentsDirectory();
+      final originalFile = File(
+        '${appDir.path}/original_${DateTime.now().millisecondsSinceEpoch}.jpg',
+      );
+      await originalFile.writeAsBytes(rawBytes);
 
-    request.files.add(
-      await http.MultipartFile.fromPath('image', originalFile.path),
-    );
+      // ── STEP 3: Request gallery permission ───────────────────────────────
+      final hasAccess = await Gal.requestAccess();
+      if (!hasAccess) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Gallery permission denied — image not saved'),
+              backgroundColor: Colors.orange,
+            ),
+          );
+        }
+        return;
+      }
 
-    var response = await request.send();
+      // ── STEP 4: Add stamp and save to gallery ─────────────────────────────
+      final stamped = await addStamp(
+        rawBytes,
+        address.isNotEmpty ? address : 'Lat: $lat Lon: $lon',
+        '$currentDate  $currentTime',
+        hash.substring(0, 16),
+      );
 
-    if (response.statusCode == 200) {
-      print("Uploaded to backend successfully");
-    } else {
-      print("Upload failed");
+      // Save stamped PNG to temp file first, then pass path to Gal
+      // (Gal.putImageBytes can throw UNEXPECTED on many Android devices;
+      //  path-based Gal.putImage is far more reliable)
+      final tempDir = await getTemporaryDirectory();
+      final tempFile = File(
+        '${tempDir.path}/geoklik_${DateTime.now().millisecondsSinceEpoch}.png',
+      );
+      await tempFile.writeAsBytes(stamped);
+
+      await Gal.putImage(tempFile.path);
+
+      if (!mounted) return;
+      setState(() {
+        lastPhoto = tempFile;
+        lastHash = hash;
+        lastOriginalPhoto = originalFile;
+        lastLocation = address.isNotEmpty ? address : 'Lat: $lat, Lon: $lon';
+        lastTimestamp = '$currentDate  $currentTime';
+      });
+
+      // Show success immediately — camera is ready for next shot
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: const Text('📸 Saved! Uploading to blockchain...'),
+            backgroundColor: const Color(0xFF031926),
+            duration: const Duration(seconds: 3),
+            action: SnackBarAction(
+              label: 'View',
+              textColor: const Color(0xFFDEB841),
+              onPressed: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => AppGalleryScreen(
+                      imageFile: tempFile,
+                      originalFile: originalFile,
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+        );
+      }
+
+      // ── STEP 5: Upload to blockchain IN BACKGROUND (non-blocking) ─────────
+      // Camera is already freed at this point via finally block below.
+      _uploadToBlockchain(originalFile, hash);
+
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Capture error: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    } finally {
+      // Always release the lock so camera is usable again
+      if (mounted) setState(() => _isCapturing = false);
     }
+  }
 
-    await Gal.requestAccess();
+  /// Uploads to backend + blockchain. Runs in background — does NOT block camera.
+  Future<void> _uploadToBlockchain(File originalFile, String hash) async {
+    try {
+      final request = http.MultipartRequest(
+        'POST',
+        Uri.parse('${ApiConstants.baseUrl}/upload-proof'),
+      );
+      request.fields['latitude'] = lat;
+      request.fields['longitude'] = lon;
+      request.fields['timestamp'] = '$currentDate $currentTime';
+      request.files.add(
+        await http.MultipartFile.fromPath('image', originalFile.path),
+      );
 
-    final stamped = await addStamp(
-      rawBytes,
-      address.isNotEmpty ? address : 'Lat: $lat Lon: $lon',
-      '$currentDate  $currentTime',
-      hash.substring(0, 16),
-    );
+      // 10-second timeout — backend unreachable won't freeze anything
+      final response = await request.send().timeout(
+        const Duration(seconds: 10),
+        onTimeout: () => throw Exception('Backend timeout'),
+      );
 
-    await Gal.putImageBytes(stamped);
-
-    final tempFile = File(file.path.replaceAll('.jpg', '_stamped.jpg'));
-    await tempFile.writeAsBytes(stamped);
-
-    if (!mounted) return;
-    setState(() {
-      lastPhoto = tempFile;
-      lastHash = hash;
-      lastOriginalPhoto = originalFile;
-      lastLocation = address.isNotEmpty ? address : 'Lat: $lat, Lon: $lon';
-      lastTimestamp = '$currentDate  $currentTime';
-    });
+      if (mounted) {
+        if (response.statusCode == 200) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('✅ Secured on Blockchain!'),
+              backgroundColor: Colors.green,
+              duration: Duration(seconds: 2),
+            ),
+          );
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('⚠️ Saved locally, blockchain upload failed'),
+              backgroundColor: Colors.orange,
+            ),
+          );
+        }
+      }
+    } catch (e) {
+      // Blockchain upload failed — photo is still saved locally, just not on chain
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('📵 Saved locally. Backend unreachable — check WiFi/firewall'),
+            backgroundColor: Colors.orange,
+            duration: Duration(seconds: 4),
+          ),
+        );
+      }
+    }
   }
 
   void _onShutterTap() {
@@ -233,14 +339,269 @@ class _CameraScreenState extends State<CameraScreen> {
     if (!mounted) return;
     setState(() => showShutterFlash = true);
 
-    // hide flash shortly after
     Future.delayed(const Duration(milliseconds: 180), () {
       if (!mounted) return;
       setState(() => showShutterFlash = false);
     });
 
-    // perform capture (don't await here so UI feedback shows immediately)
-    takePhoto();
+    // Await so errors in takePhoto() are properly surfaced
+    takePhoto().catchError((e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Capture error: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    });
+  }
+
+  // ===== VERIFY FROM GALLERY (uses FilePicker — no compression, raw bytes) =====
+  Future<void> verifyFromGallery() async {
+    final result = await FilePicker.platform.pickFiles(
+      type: FileType.image,
+      allowMultiple: false,
+      withData: false, // don't load into memory, just get the path
+    );
+    if (result == null || result.files.isEmpty) return;
+    final path = result.files.single.path;
+    if (path == null) return;
+    await _runVerification(path, fromGallery: true);
+  }
+
+  // ===== VERIFY LAST CAPTURED (byte-perfect, no gallery roundtrip) =====
+  Future<void> verifyLastCaptured() async {
+    if (lastOriginalPhoto == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('No captured photo in this session yet'),
+            backgroundColor: Colors.orange,
+          ),
+        );
+      }
+      return;
+    }
+    await _runVerification(lastOriginalPhoto!.path, fromGallery: false);
+  }
+
+  // ===== CORE VERIFICATION LOGIC =====
+  Future<void> _runVerification(String filePath, {required bool fromGallery}) async {
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('🔍 Verifying on blockchain...'),
+          backgroundColor: Color(0xFF031926),
+          duration: Duration(seconds: 30),
+        ),
+      );
+    }
+
+    try {
+      // For gallery images: copy bytes to temp file to handle content:// URIs
+      String uploadPath = filePath;
+      File? tempFile;
+      if (fromGallery) {
+        final bytes = await File(filePath).readAsBytes();
+        final tempDir = await getTemporaryDirectory();
+        tempFile = File('${tempDir.path}/verify_${DateTime.now().millisecondsSinceEpoch}.jpg');
+        await tempFile.writeAsBytes(bytes);
+        uploadPath = tempFile.path;
+      }
+
+      final request = http.MultipartRequest(
+        'POST',
+        Uri.parse('${ApiConstants.baseUrl}/verify-proof'),
+      );
+      request.files.add(await http.MultipartFile.fromPath('image', uploadPath));
+
+      final streamedResponse = await request.send().timeout(
+        const Duration(seconds: 20),
+        onTimeout: () => throw Exception('Timed out — check backend & network'),
+      );
+      final body = await streamedResponse.stream.bytesToString();
+      final data = jsonDecode(body);
+
+      await tempFile?.delete();
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).clearSnackBars();
+
+      final bool verified = data['verified'] == true;
+      final blockchainData = data['blockchainData'];
+      final String? returnedHash = data['hash'];
+
+      showDialog(
+        context: context,
+        builder: (_) => AlertDialog(
+          backgroundColor: const Color(0xFF031926),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          title: Row(
+            children: [
+              Icon(
+                verified ? Icons.verified : Icons.cancel,
+                color: verified ? Colors.green : Colors.red,
+              ),
+              const SizedBox(width: 8),
+              Text(
+                verified ? 'Verified ✅' : 'Not Found ❌',
+                style: const TextStyle(color: Colors.white, fontSize: 18),
+              ),
+            ],
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                data['message'] ?? 'No response',
+                style: const TextStyle(color: Colors.white70),
+              ),
+              if (!verified && fromGallery) ...[
+                const SizedBox(height: 10),
+                const Text(
+                  '⚠️ Gallery images may be re-encoded by Android. Try "Verify Last Captured" for a reliable check.',
+                  style: TextStyle(color: Colors.orange, fontSize: 11),
+                ),
+              ],
+              if (returnedHash != null) ...[
+                const SizedBox(height: 10),
+                const Divider(color: Color(0xFFDEB841)),
+                const SizedBox(height: 4),
+                Text(
+                  'Hash checked:\n${returnedHash.substring(0, 32)}...',
+                  style: const TextStyle(color: Colors.white38, fontSize: 10),
+                ),
+              ],
+              if (verified && blockchainData != null) ...[
+                const SizedBox(height: 14),
+                const Divider(color: Color(0xFFDEB841)),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    const Icon(Icons.location_on, color: Color(0xFFDEB841), size: 16),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        '${blockchainData['latitude']}, ${blockchainData['longitude']}',
+                        style: const TextStyle(color: Colors.white, fontSize: 13),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 6),
+                Row(
+                  children: [
+                    const Icon(Icons.access_time, color: Color(0xFFDEB841), size: 16),
+                    const SizedBox(width: 6),
+                    Text(
+                      '${blockchainData['timestamp']}',
+                      style: const TextStyle(color: Colors.white, fontSize: 13),
+                    ),
+                  ],
+                ),
+              ],
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('OK', style: TextStyle(color: Color(0xFFDEB841))),
+            ),
+          ],
+        ),
+      );
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).clearSnackBars();
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Verification failed: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
+  // ===== SHOW VERIFY OPTIONS BOTTOM SHEET =====
+  void _showVerifyOptions() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF031926),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (_) => Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 40, height: 4,
+              decoration: BoxDecoration(
+                color: Colors.white24,
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            const SizedBox(height: 16),
+            const Text(
+              'Verify Image',
+              style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 6),
+            const Text(
+              'Use original (unstamped) image for accurate verification',
+              style: TextStyle(color: Colors.white38, fontSize: 12),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 20),
+            // Option 1: Verify last captured (most reliable)
+            ListTile(
+              leading: Container(
+                width: 42, height: 42,
+                decoration: BoxDecoration(
+                  color: Colors.green.withOpacity(0.15),
+                  shape: BoxShape.circle,
+                  border: Border.all(color: Colors.green, width: 1.5),
+                ),
+                child: const Icon(Icons.verified, color: Colors.green, size: 20),
+              ),
+              title: const Text('Verify Last Captured', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
+              subtitle: Text(
+                lastOriginalPhoto != null ? '✅ Reliable — uses internal file directly' : 'No photo captured yet this session',
+                style: TextStyle(color: lastOriginalPhoto != null ? Colors.green[300] : Colors.white38, fontSize: 11),
+              ),
+              onTap: lastOriginalPhoto != null ? () {
+                Navigator.pop(context);
+                verifyLastCaptured();
+              } : null,
+            ),
+            const Divider(color: Colors.white12),
+            // Option 2: Pick from gallery
+            ListTile(
+              leading: Container(
+                width: 42, height: 42,
+                decoration: BoxDecoration(
+                  color: const Color(0xFFDEB841).withOpacity(0.15),
+                  shape: BoxShape.circle,
+                  border: Border.all(color: const Color(0xFFDEB841), width: 1.5),
+                ),
+                child: const Icon(Icons.photo_library, color: Color(0xFFDEB841), size: 20),
+              ),
+              title: const Text('Pick from Gallery', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
+              subtitle: const Text('For images from other devices — use original (unstamped) file', style: TextStyle(color: Colors.white38, fontSize: 11)),
+              onTap: () {
+                Navigator.pop(context);
+                verifyFromGallery();
+              },
+            ),
+            const SizedBox(height: 10),
+          ],
+        ),
+      ),
+    );
   }
 
   Future<Uint8List> addStamp(
@@ -538,12 +899,14 @@ class _CameraScreenState extends State<CameraScreen> {
       ),
 
       bottomNavigationBar: Container(
-        height: 100,
+        height: 110,
         color: const Color(0xFF031926),
-        padding: const EdgeInsets.only(bottom: 30),
+        padding: const EdgeInsets.only(bottom: 20),
         child: Row(
           mainAxisAlignment: MainAxisAlignment.spaceAround,
+          crossAxisAlignment: CrossAxisAlignment.center,
           children: [
+            // Gallery thumbnail
             GestureDetector(
               onTap: () {
                 Navigator.push(
@@ -565,24 +928,89 @@ class _CameraScreenState extends State<CameraScreen> {
                   border: Border.all(color: Colors.white24),
                 ),
                 child: lastPhoto != null
-                    ? Image.file(lastPhoto!, fit: BoxFit.cover)
+                    ? ClipRRect(
+                        borderRadius: BorderRadius.circular(7),
+                        child: Image.file(lastPhoto!, fit: BoxFit.cover),
+                      )
                     : const Icon(Icons.photo, color: Colors.white54),
               ),
             ),
-            const Icon(Icons.verified, color: Colors.white54),
+
+            // Verify button — shows options sheet
             GestureDetector(
-              onTap: _onShutterTap,
-              child: const Icon(Icons.camera, color: Colors.white),
+              onTap: _showVerifyOptions,
+              child: Container(
+                width: 44,
+                height: 44,
+                decoration: BoxDecoration(
+                  color: const Color(0xFF031926),
+                  shape: BoxShape.circle,
+                  border: Border.all(color: const Color(0xFFDEB841), width: 1.5),
+                ),
+                child: const Icon(Icons.verified, color: Color(0xFFDEB841), size: 22),
+              ),
             ),
+
+            // SHUTTER — large tappable circle, disabled while capturing
+            GestureDetector(
+              onTap: _isCapturing ? null : _onShutterTap,
+              child: Container(
+                width: 70,
+                height: 70,
+                decoration: BoxDecoration(
+                  color: _isCapturing ? Colors.grey[300] : Colors.white,
+                  shape: BoxShape.circle,
+                  border: Border.all(color: const Color(0xFFDEB841), width: 3),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.white.withOpacity(0.3),
+                      blurRadius: 10,
+                      spreadRadius: 2,
+                    ),
+                  ],
+                ),
+                child: _isCapturing
+                    ? const Padding(
+                        padding: EdgeInsets.all(18),
+                        child: CircularProgressIndicator(
+                          strokeWidth: 3,
+                          color: Color(0xFF031926),
+                        ),
+                      )
+                    : const Icon(Icons.camera_alt, color: Color(0xFF031926), size: 32),
+              ),
+            ),
+
+            // Map
             GestureDetector(
               onTap: openMap,
-              child: const Icon(Icons.map, color: Colors.white54),
+              child: Container(
+                width: 44,
+                height: 44,
+                decoration: BoxDecoration(
+                  color: const Color(0xFF031926),
+                  shape: BoxShape.circle,
+                  border: Border.all(color: Colors.white24, width: 1.5),
+                ),
+                child: const Icon(Icons.map, color: Colors.white54, size: 22),
+              ),
             ),
+
+            // Device gallery
             GestureDetector(
               onTap: () async {
                 await Gal.open();
               },
-              child: const Icon(Icons.photo_library, color: Colors.white54),
+              child: Container(
+                width: 44,
+                height: 44,
+                decoration: BoxDecoration(
+                  color: const Color(0xFF031926),
+                  shape: BoxShape.circle,
+                  border: Border.all(color: Colors.white24, width: 1.5),
+                ),
+                child: const Icon(Icons.photo_library, color: Colors.white54, size: 22),
+              ),
             ),
           ],
         ),

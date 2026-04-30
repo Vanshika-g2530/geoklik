@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'splash_screen.dart';
 import 'camera_screen.dart';
+import 'api_constants.dart';
 
 void main() {
   runApp(const MyApp());
@@ -34,6 +35,8 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
+  bool _isLoading = false;
+
   Future<void> verifyImage() async {
     final picker = ImagePicker();
 
@@ -41,33 +44,43 @@ class _HomeScreenState extends State<HomeScreen> {
 
     if (pickedFile == null) return;
 
-    var request = http.MultipartRequest(
-      'POST',
-      Uri.parse('http://10.7.17.27:3000/verify-proof'),
-    );
+    setState(() => _isLoading = true);
 
-    request.files.add(
-      await http.MultipartFile.fromPath('image', pickedFile.path),
-    );
+    try {
+      var request = http.MultipartRequest(
+        'POST',
+        Uri.parse('${ApiConstants.baseUrl}/verify-proof'),
+      );
 
-    var response = await request.send();
-    var responseData = await response.stream.bytesToString();
+      request.files.add(
+        await http.MultipartFile.fromPath('image', pickedFile.path),
+      );
 
-    final data = jsonDecode(responseData);
+      var response = await request.send();
+      var responseData = await response.stream.bytesToString();
 
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text("Verification Result"),
-        content: Text(data["message"]),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text("OK"),
-          ),
-        ],
-      ),
-    );
+      final data = jsonDecode(responseData);
+
+      showDialog(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text("Verification Result"),
+          content: Text(data["message"] ?? "Unknown response"),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text("OK"),
+            ),
+          ],
+        ),
+      );
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Verification failed: Could not connect to server')),
+      );
+    } finally {
+      setState(() => _isLoading = false);
+    }
   }
 
   @override
@@ -159,15 +172,28 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                 ),
 
-                onPressed: verifyImage,
+                onPressed: _isLoading ? null : verifyImage,
 
-                icon: const Icon(Icons.verified_user),
+                icon: _isLoading 
+                    ? const SizedBox(
+                        width: 20, 
+                        height: 20, 
+                        child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFFDEB841))
+                      )
+                    : const Icon(Icons.verified_user),
 
-                label: const Text(
-                  'Verify Image',
-                  style: TextStyle(fontSize: 16),
+                label: Text(
+                  _isLoading ? 'Verifying...' : 'Verify Image',
+                  style: const TextStyle(fontSize: 16),
                 ),
               ),
+            ),
+
+            const SizedBox(height: 10),
+
+            const Text(
+              '* Select the original unstamped image',
+              style: TextStyle(fontSize: 12, color: Colors.grey),
             ),
           ],
         ),

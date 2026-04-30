@@ -4,19 +4,25 @@ import path from "path";
 import fs from "fs";
 import crypto from "crypto";
 import { ethers } from "ethers";
+import dotenv from "dotenv";
+import cors from "cors";
+import type { GeoProof } from "../types/ethers-contracts/GeoProof.js";
 
+dotenv.config();
 const app = express();
+app.use(cors());
 const PORT = 3000;
 
 // ===== Ganache Blockchain Setup =====
 
-const provider = new ethers.JsonRpcProvider("http://127.0.0.1:7545");
+const providerUrl = process.env.RPC_URL || "http://127.0.0.1:7545";
+const provider = new ethers.JsonRpcProvider(providerUrl);
 
-const privateKey = "0xdd7f2c7a3498b2827a6dd2f78e195384c3b8c61de500de8dd4d152519842a2ed";
+const privateKey = process.env.PRIVATE_KEY || "0xdac61d93b33c8cfc9cecadecce2a07d3f6897e3520e7faf95fe3950b4fa00045";
 
 const wallet = new ethers.Wallet(privateKey, provider);
 
-const contractAddress = "0x40a4d5f5f74E6303e4F446682152a96d1F2ba03B";
+const contractAddress = process.env.CONTRACT_ADDRESS || "0x40a4d5f5f74E6303e4F446682152a96d1F2ba03B";
 
 const contractABI = [
   "function storeProof(string memory _imageHash, string memory _latitude, string memory _longitude, string memory _timestamp) public",
@@ -27,13 +33,18 @@ const contract = new ethers.Contract(
   contractAddress,
   contractABI,
   wallet
-);
+) as unknown as GeoProof;
 
 // ===== Multer Storage Setup =====
 
+const uploadDir = path.join(process.cwd(), "src", "uploads");
+if (!fs.existsSync(uploadDir)) {
+  fs.mkdirSync(uploadDir, { recursive: true });
+}
+
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
-    cb(null, "src/uploads/");
+    cb(null, uploadDir);
   },
   filename: (req, file, cb) => {
     cb(null, Date.now() + path.extname(file.originalname));
@@ -64,22 +75,20 @@ app.post("/upload-proof", upload.single("image"), async (req, res) => {
     const { latitude, longitude, timestamp } = req.body;
 
     if (!req.file) {
-      return res.status(400).send({
-        message: "No image uploaded",
-      });
+      return res.status(400).send({ message: "No image uploaded" });
     }
 
     const filePath = req.file.path;
     const imageHash = generateFileHash(filePath);
 
-    const tx = await contract.storeProof(
-      imageHash,
-      latitude,
-      longitude,
-      timestamp
-    );
+    // Debug: log hash being stored
+    console.log(`[UPLOAD] File size: ${req.file.size} bytes`);
+    console.log(`[UPLOAD] Hash to store: ${imageHash}`);
 
+    const tx = await contract.storeProof(imageHash, latitude, longitude, timestamp);
     await tx.wait();
+
+    console.log(`[UPLOAD] Stored on blockchain. TX: ${tx.hash}`);
 
     res.send({
       message: "Image uploaded + stored on blockchain successfully",
@@ -92,27 +101,28 @@ app.post("/upload-proof", upload.single("image"), async (req, res) => {
     });
 
   } catch (error) {
-    console.error(error);
-    res.status(500).send({
-      message: "Blockchain storage failed",
-    });
+    console.error("[UPLOAD ERROR]", error);
+    res.status(500).send({ message: "Blockchain storage failed" });
   }
 });
 
 app.post("/verify-proof", upload.single("image"), async (req, res) => {
   try {
     if (!req.file) {
-      return res.status(400).send({
-        message: "No image uploaded",
-      });
+      return res.status(400).send({ message: "No image uploaded" });
     }
 
     const filePath = req.file.path;
     const imageHash = generateFileHash(filePath);
 
-    const result = await contract.verifyProof(imageHash);
+    // Debug: log hash being verified
+    console.log(`[VERIFY] File size: ${req.file.size} bytes`);
+    console.log(`[VERIFY] Hash to check: ${imageHash}`);
 
+    const result = await contract.verifyProof(imageHash);
     const exists = result[4];
+
+    console.log(`[VERIFY] Found on blockchain: ${exists}`);
 
     if (exists) {
       res.send({
@@ -129,21 +139,20 @@ app.post("/verify-proof", upload.single("image"), async (req, res) => {
       res.send({
         message: "Image Not Found on Blockchain ❌",
         verified: false,
-        hash: imageHash,
+        hash: imageHash,  // returned so Flutter can show it
       });
     }
 
   } catch (error) {
-    console.error(error);
-    res.status(500).send({
-      message: "Verification failed",
-    });
+    console.error("[VERIFY ERROR]", error);
+    res.status(500).send({ message: "Verification failed" });
   }
 });
 
 
 // ===== Start Server =====
 
-app.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT}`);
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`Server running on http://0.0.0.0:${PORT}`);
+  console.log(`From phone, use: http://10.7.17.27:${PORT} or http://192.168.137.1:${PORT}`);
 });

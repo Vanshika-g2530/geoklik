@@ -20,42 +20,26 @@ class AppGalleryScreen extends StatelessWidget {
 
         /// 🔥 EXPORT OPTION
         actions: [
-          IconButton(
-            icon: const Icon(Icons.more_vert),
-            onPressed: () {
-              showModalBottomSheet(
-                context: context,
-                backgroundColor: const Color(0xFF031926),
-                shape: const RoundedRectangleBorder(
-                  borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
-                ),
-                builder: (_) {
-                  return SafeArea(
-                    child: ListTile(
-                      leading: const Icon(Icons.download, color: Colors.white),
-                      title: const Text(
-                        "Export Without Stamp",
-                        style: TextStyle(color: Colors.white),
-                      ),
-                      onTap: () async {
-                        if (originalFile != null) {
-                          await Gal.putImage(originalFile!.path);
-
-                          Navigator.pop(context);
-
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(
-                              content: Text("Exported to phone gallery"),
-                            ),
-                          );
-                        }
-                      },
+          if (originalFile != null)
+            TextButton.icon(
+              icon: const Icon(Icons.download, color: Color(0xFFDEB841)),
+              label: const Text(
+                "Save Original",
+                style: TextStyle(color: Color(0xFFDEB841), fontWeight: FontWeight.bold),
+              ),
+              onPressed: () async {
+                await Gal.putImage(originalFile!.path);
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text("Original (unstamped) image saved to gallery! Use this for verification."),
+                      backgroundColor: Colors.green,
+                      duration: Duration(seconds: 4),
                     ),
                   );
-                },
-              );
-            },
-          ),
+                }
+              },
+            ),
         ],
       ),
 
