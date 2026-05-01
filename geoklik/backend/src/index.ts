@@ -72,18 +72,18 @@ app.get("/test", (req, res) => {
 
 app.post("/upload-proof", upload.single("image"), async (req, res) => {
   try {
-    const { latitude, longitude, timestamp } = req.body;
+    const { latitude, longitude, timestamp, imageHash } = req.body;
 
     if (!req.file) {
       return res.status(400).send({ message: "No image uploaded" });
     }
+    if (!imageHash) {
+      return res.status(400).send({ message: "No imageHash provided" });
+    }
 
-    const filePath = req.file.path;
-    const imageHash = generateFileHash(filePath);
-
-    // Debug: log hash being stored
+    // Use the client-computed hash (avoids Android file system modification issues)
     console.log(`[UPLOAD] File size: ${req.file.size} bytes`);
-    console.log(`[UPLOAD] Hash to store: ${imageHash}`);
+    console.log(`[UPLOAD] Hash from client: ${imageHash}`);
 
     const tx = await contract.storeProof(imageHash, latitude, longitude, timestamp);
     await tx.wait();
@@ -93,9 +93,7 @@ app.post("/upload-proof", upload.single("image"), async (req, res) => {
     res.send({
       message: "Image uploaded + stored on blockchain successfully",
       file: req.file.filename,
-      latitude,
-      longitude,
-      timestamp,
+      latitude, longitude, timestamp,
       hash: imageHash,
       transactionHash: tx.hash,
     });
@@ -108,15 +106,22 @@ app.post("/upload-proof", upload.single("image"), async (req, res) => {
 
 app.post("/verify-proof", upload.single("image"), async (req, res) => {
   try {
-    if (!req.file) {
-      return res.status(400).send({ message: "No image uploaded" });
+    // Accept imageHash either from form field (client-computed) or compute from file
+    let imageHash: string = req.body?.imageHash;
+
+    if (!imageHash) {
+      if (!req.file) {
+        return res.status(400).send({ message: "No image or imageHash provided" });
+      }
+      // Fallback: compute from uploaded file
+      imageHash = generateFileHash(req.file.path);
+      console.log(`[VERIFY] Hash computed from file: ${imageHash}`);
+    } else {
+      console.log(`[VERIFY] Hash from client: ${imageHash}`);
     }
 
-    const filePath = req.file.path;
-    const imageHash = generateFileHash(filePath);
-
-    // Debug: log hash being verified
-    console.log(`[VERIFY] File size: ${req.file.size} bytes`);
+    const fileSize = req.file?.size ?? 0;
+    console.log(`[VERIFY] File size: ${fileSize} bytes`);
     console.log(`[VERIFY] Hash to check: ${imageHash}`);
 
     const result = await contract.verifyProof(imageHash);
@@ -139,7 +144,7 @@ app.post("/verify-proof", upload.single("image"), async (req, res) => {
       res.send({
         message: "Image Not Found on Blockchain ❌",
         verified: false,
-        hash: imageHash,  // returned so Flutter can show it
+        hash: imageHash,
       });
     }
 

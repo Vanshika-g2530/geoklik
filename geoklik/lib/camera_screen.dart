@@ -232,7 +232,8 @@ class _CameraScreenState extends State<CameraScreen> {
       setState(() {
         lastPhoto = tempFile;
         lastHash = hash;
-        lastOriginalPhoto = originalFile;
+        // Use tempFile (stamped) as the verification source — matches what's in gallery
+        lastOriginalPhoto = tempFile;
         lastLocation = address.isNotEmpty ? address : 'Lat: $lat, Lon: $lon';
         lastTimestamp = '$currentDate  $currentTime';
       });
@@ -263,9 +264,10 @@ class _CameraScreenState extends State<CameraScreen> {
         );
       }
 
-      // ── STEP 5: Upload to blockchain IN BACKGROUND (non-blocking) ─────────
-      // Camera is already freed at this point via finally block below.
-      _uploadToBlockchain(originalFile, hash);
+      // ── STEP 5: Upload STAMPED image to blockchain (non-blocking) ─────────
+      // Compute hash from in-memory bytes
+      final stampedHash = makeHash(stamped);
+      _uploadToBlockchain(tempFile, stampedHash);
 
     } catch (e) {
       if (mounted) {
@@ -282,8 +284,8 @@ class _CameraScreenState extends State<CameraScreen> {
     }
   }
 
-  /// Uploads to backend + blockchain. Runs in background — does NOT block camera.
-  Future<void> _uploadToBlockchain(File originalFile, String hash) async {
+  /// Uploads stamped image to backend + blockchain. Runs in background.
+  Future<void> _uploadToBlockchain(File stampedFile, String stampedHash) async {
     try {
       final request = http.MultipartRequest(
         'POST',
@@ -292,8 +294,10 @@ class _CameraScreenState extends State<CameraScreen> {
       request.fields['latitude'] = lat;
       request.fields['longitude'] = lon;
       request.fields['timestamp'] = '$currentDate $currentTime';
+      // Send Flutter-computed hash — backend stores this (not its own file hash)
+      request.fields['imageHash'] = stampedHash;
       request.files.add(
-        await http.MultipartFile.fromPath('image', originalFile.path),
+        await http.MultipartFile.fromPath('image', stampedFile.path),
       );
 
       // 10-second timeout — backend unreachable won't freeze anything
@@ -357,12 +361,12 @@ class _CameraScreenState extends State<CameraScreen> {
     });
   }
 
-  // ===== VERIFY FROM GALLERY (uses FilePicker — no compression, raw bytes) =====
+  // ===== VERIFY FROM FILE (avoids gallery re-encoding) =====
   Future<void> verifyFromGallery() async {
     final result = await FilePicker.platform.pickFiles(
-      type: FileType.image,
+      type: FileType.any, // Use 'any' to allow picking from raw file system rather than media picker
       allowMultiple: false,
-      withData: false, // don't load into memory, just get the path
+      withData: false,
     );
     if (result == null || result.files.isEmpty) return;
     final path = result.files.single.path;
@@ -399,22 +403,19 @@ class _CameraScreenState extends State<CameraScreen> {
     }
 
     try {
-      // For gallery images: copy bytes to temp file to handle content:// URIs
-      String uploadPath = filePath;
-      File? tempFile;
-      if (fromGallery) {
-        final bytes = await File(filePath).readAsBytes();
-        final tempDir = await getTemporaryDirectory();
-        tempFile = File('${tempDir.path}/verify_${DateTime.now().millisecondsSinceEpoch}.jpg');
-        await tempFile.writeAsBytes(bytes);
-        uploadPath = tempFile.path;
-      }
+      // Read bytes and compute hash
+      final pickedBytes = await File(filePath).readAsBytes();
+      final pickedHash = makeHash(pickedBytes);
 
       final request = http.MultipartRequest(
         'POST',
         Uri.parse('${ApiConstants.baseUrl}/verify-proof'),
       );
-      request.files.add(await http.MultipartFile.fromPath('image', uploadPath));
+      // Send Flutter-computed hash — backend uses this for lookup
+      request.fields['imageHash'] = pickedHash;
+      
+      // We no longer need to upload the file for verification since we send the hash directly.
+      // This also prevents Android from creating temporary copies in the gallery.
 
       final streamedResponse = await request.send().timeout(
         const Duration(seconds: 20),
@@ -422,8 +423,6 @@ class _CameraScreenState extends State<CameraScreen> {
       );
       final body = await streamedResponse.stream.bytesToString();
       final data = jsonDecode(body);
-
-      await tempFile?.delete();
 
       if (!mounted) return;
       ScaffoldMessenger.of(context).clearSnackBars();
@@ -590,8 +589,8 @@ class _CameraScreenState extends State<CameraScreen> {
                 ),
                 child: const Icon(Icons.photo_library, color: Color(0xFFDEB841), size: 20),
               ),
-              title: const Text('Pick from Gallery', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
-              subtitle: const Text('For images from other devices — use original (unstamped) file', style: TextStyle(color: Colors.white38, fontSize: 11)),
+              title: const Text('Pick File (Exact Match)', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
+              subtitle: const Text('Use file manager to select unmodified file (Gallery apps alter image bytes)', style: TextStyle(color: Colors.white38, fontSize: 11)),
               onTap: () {
                 Navigator.pop(context);
                 verifyFromGallery();
