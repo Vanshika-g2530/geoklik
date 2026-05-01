@@ -142,6 +142,6 @@ GeoKlik/
 
 Developed by:
 
-**Akriti Bansal**
-**Shreya Sharma**
+**Akriti Bansal** <br>
+**Shreya Sharma** <br>
 **Vanshika Goyal**
