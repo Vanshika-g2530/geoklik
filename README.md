@@ -84,9 +84,9 @@ This project is structured into two main components:
 
 ## Authors
 Developed by:
-**Akriti Bansal** <br>
+**Vanshika Goyal** <br>
 **Shreya Sharma** <br>
-**Vanshika Goyal**
+**Akriti Bansal**
 
 ## License
 This project is licensed under the MIT License.
